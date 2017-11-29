@@ -137,7 +137,7 @@ mod tests {
 
 			assert_eq!(initial_zeroed_buf, serialized_buf);
 
-			TestResult::from_bool(true)
+			TestResult::passed()
 		}
 	}
 }
