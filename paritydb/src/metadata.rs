@@ -106,4 +106,38 @@ pub mod bytes {
 	}
 }
 
+#[cfg(test)]
+mod tests {
+	use super::{Metadata, bytes};
+	use quickcheck::TestResult;
 
+	quickcheck! {
+		fn quickcheck_empty_metadata_roundtrips_from_and_to_buffer(
+			key_index_bits: u8
+		) -> TestResult {
+			// key_index_bits == 0 is not allowed
+			if key_index_bits == 0 {
+				return TestResult::discard();
+			}
+			// limit search space to prevent test from running a really long time
+			if key_index_bits > 16 {
+				return TestResult::discard();
+			}
+
+			let initial_zeroed_buf: Vec<u8> = vec![0; bytes::len(key_index_bits)];
+			let metadata = bytes::read(&initial_zeroed_buf[..], key_index_bits);
+			assert_eq!(metadata.db_version, 0);
+			assert_eq!(metadata.occupied_bytes, 0);
+
+			let metadata_bytes = metadata.as_bytes();
+			assert_eq!(metadata_bytes.len(), bytes::len(key_index_bits));
+
+			let mut serialized_buf: Vec<u8> = vec![0; bytes::len(key_index_bits)];
+			metadata_bytes.copy_to_slice(&mut serialized_buf[..]);
+
+			assert_eq!(initial_zeroed_buf, serialized_buf);
+
+			TestResult::from_bool(true)
+		}
+	}
+}
