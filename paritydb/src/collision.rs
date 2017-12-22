@@ -51,11 +51,17 @@ impl Collision {
 		for entry in log {
 			let entry = entry?;
 			let position = entry.position;
-			let size = LogEntry::len(&entry.key, &entry.value);
-			index.insert(entry.key, IndexEntry { position, size });
-		}
 
-		println!("Index: {:?}", index);
+			match entry.value {
+				Some(value) => {
+					let size = LogEntry::len(&entry.key, &value);
+					index.insert(entry.key, IndexEntry { position, size });
+				},
+				None => {
+					index.remove(&entry.key);
+				},
+			}
+		}
 
 		Ok(index)
 	}
@@ -102,7 +108,11 @@ impl Collision {
 	}
 
 	pub fn delete(&mut self, key: &[u8]) -> Result<()> {
-		unimplemented!()
+		if let Some(_) = self.index.remove(key) {
+			LogEntry::write_deleted(&mut self.file, key)?;
+		}
+
+		Ok(())
 	}
 
 	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -119,7 +129,7 @@ impl Collision {
 
 			assert!(entry.key == key);
 
-			Ok(Some(entry.value))
+			Ok(Some(entry.value.expect("index only points to live entries; qed")))
 		} else {
 			Ok(None)
 		}
@@ -131,16 +141,30 @@ impl Collision {
 			Operation::Insert(key, value) => self.put(key, value),
 		}
 	}
+
+	pub fn compact(&mut self) -> Result<()> {
+		unimplemented!()
+	}
 }
 
+#[derive(Debug)]
 struct LogEntry {
 	position: u64,
 	key: Vec<u8>,
-	value: Vec<u8>,
+	value: Option<Vec<u8>>,
 }
 
 impl LogEntry {
 	const ENTRY_STATIC_SIZE: usize = 8; // key_size(4) + value_size(4)
+	const ENTRY_TOMBSTONE: u32 = !0; // used as value_size to represent a deleted entry
+
+	fn write_deleted<W: Write + Seek>(writer: &mut W, key: &[u8]) -> Result<u64> {
+		let position = writer.seek(SeekFrom::Current(0))?;
+		writer.write_u32::<LittleEndian>(key.len() as u32)?;
+		writer.write_all(key)?;
+		writer.write_u32::<LittleEndian>(LogEntry::ENTRY_TOMBSTONE)?;
+		Ok(position)
+	}
 
 	fn write<W: Write + Seek>(writer: &mut W, key: &[u8], value: &[u8]) -> Result<u64> {
 		let position = writer.seek(SeekFrom::Current(0))?;
@@ -157,8 +181,16 @@ impl LogEntry {
 		let mut key = vec![0u8; key_size as usize];
 		reader.read_exact(&mut key)?;
 		let value_size = reader.read_u32::<LittleEndian>()?;
-		let mut value = vec![0u8; value_size as usize];
-		reader.read_exact(&mut value)?;
+
+		let value =
+			if value_size == LogEntry::ENTRY_TOMBSTONE {
+				None
+			} else {
+				let mut value = vec![0u8; value_size as usize];
+				reader.read_exact(&mut value)?;
+				Some(value)
+			};
+
 		Ok(LogEntry { position, key, value })
 	}
 
