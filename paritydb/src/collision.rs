@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -11,13 +12,25 @@ use transaction::Operation;
 /// this prefix exists in this file because there was a high threshold of
 /// collisions.
 ///
+/// The data file is a log file backed by an in-memory BTree. All mutable
+/// operations are appended to the log file, and the in-memory BTree maps the
+/// keys to their position in the log file.
+///
 /// Idea: use exactly the same strategy as used for the data file but ignoring
 /// the first `n` bits of the prefix and adding extra bits as needed
 ///
-/// Temporary: on-load iterate through file to build in-memory index (with BTreeMap)
 pub struct Collision {
+	index: BTreeMap<Vec<u8>, IndexEntry>,
 	prefix: u32,
+	path: PathBuf,
 	file: File,
+}
+
+#[derive(Debug)]
+pub struct IndexEntry {
+    position: u64,
+	// TODO: we can optimize our implementation for constant value sizes
+    size: usize,
 }
 
 impl Collision {
@@ -26,26 +39,44 @@ impl Collision {
 		path.as_ref().join(collision_file_name)
 	}
 
+	fn build_index<P: AsRef<Path>>(path: P) -> Result<BTreeMap<Vec<u8>, IndexEntry>> {
+		let log = LogIterator::new(path)?;
+
+		let mut index = BTreeMap::new();
+		for entry in log {
+			let entry = entry?;
+			let position = entry.position;
+			let size = LogEntry::len(&entry.key, &entry.value);
+			index.insert(entry.key, IndexEntry { position, size });
+		}
+
+		println!("Index: {:?}", index);
+
+		Ok(index)
+	}
+
 	pub fn create<P: AsRef<Path>>(path: P, prefix: u32) -> Result<Collision> {
 		// Create directories if necessary.
 		fs::create_dir_all(&path)?;
 
-		let collision_file_path = Self::collision_file_path(path, prefix);
+		let path = Self::collision_file_path(path, prefix);
 		let file = fs::OpenOptions::new()
 			.write(true)
 			.read(true)
 			.create_new(true)
-			.open(&collision_file_path)?;
+			.open(&path)?;
 
-		Ok(Collision { prefix, file })
+		let index = BTreeMap::new();
+
+		Ok(Collision { index, prefix, path, file })
 	}
 
 	pub fn open<P: AsRef<Path>>(path: P, prefix: u32) -> Result<Option<Collision>> {
-		let collision_file_path = Self::collision_file_path(path, prefix);
+		let path = Self::collision_file_path(path, prefix);
 		let open_options = fs::OpenOptions::new()
 			.write(true)
 			.read(true)
-			.open(&collision_file_path);
+			.open(&path);
 
 		let file = match open_options {
 			Ok(file) => file,
@@ -53,47 +84,43 @@ impl Collision {
 			Err(err) => return Err(err.into()),
 		};
 
-		Ok(Some(Collision { prefix, file }))
+		let index = Collision::build_index(&path)?;
+
+		Ok(Some(Collision { index, prefix, path, file }))
 	}
 
 	pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
-		self.file.seek(SeekFrom::End(0))?;
-		self.file.write_u32::<LittleEndian>(key.len() as u32)?;
-		self.file.write_all(key)?;
-		self.file.write_u32::<LittleEndian>(value.len() as u32)?;
-		self.file.write_all(value)?;
+		let position = LogEntry::write(&mut self.file, key, value)?;
+		let size = LogEntry::len(&key, &value);
+
+		self.index.insert(key.to_vec(), IndexEntry { position, size });
+
 		Ok(())
 	}
 
 	pub fn delete(&mut self, key: &[u8]) -> Result<()> {
-		// TODO
-		Ok(())
+		unimplemented!()
 	}
 
-	fn get_aux(&mut self, key: &[u8]) -> io::Result<Vec<u8>> {
-		self.file.seek(SeekFrom::Start(0))?;
+	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+		if let Some(entry) = self.index.get(key) {
+			// TODO: cache file descriptors if necessary
+			let file = fs::OpenOptions::new()
+				.write(false)
+				.read(true)
+				.create_new(false)
+				.open(&self.path)?;
 
-		loop {
-			let key_size = self.file.read_u32::<LittleEndian>()?;
-			let mut k = vec![0u8; key_size as usize];
-			self.file.read_exact(&mut k)?;
-			let value_size = self.file.read_u32::<LittleEndian>()?;
+			let mut file = BufReader::new(file);
+			file.seek(SeekFrom::Start(entry.position))?;
 
-			if k == key {
-				let mut value = vec![0u8; value_size as usize];
-				self.file.read_exact(&mut value)?;
-				return Ok(value);
-			} else {
-				self.file.seek(SeekFrom::Current(value_size as i64))?;
-			}
-		}
-	}
+			let entry = LogEntry::read(&mut file)?;
 
-	pub fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-		match self.get_aux(key) {
-			Ok(res) => Ok(Some(res)),
-			Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
-			Err(err) => Err(err.into())
+			assert!(entry.key == key);
+
+			Ok(Some(entry.value))
+		} else {
+			Ok(None)
 		}
 	}
 
@@ -101,6 +128,68 @@ impl Collision {
 		match op {
 			Operation::Delete(key) => self.delete(key),
 			Operation::Insert(key, value) => self.put(key, value),
+		}
+	}
+}
+
+struct LogEntry {
+	position: u64,
+	key: Vec<u8>,
+	value: Vec<u8>,
+}
+
+impl LogEntry {
+	const ENTRY_STATIC_SIZE: usize = 8; // key_size(4) + value_size(4)
+
+	fn write<W: Write + Seek>(writer: &mut W, key: &[u8], value: &[u8]) -> Result<u64> {
+		let position = writer.seek(SeekFrom::Current(0))?;
+		writer.write_u32::<LittleEndian>(key.len() as u32)?;
+		writer.write_all(key)?;
+		writer.write_u32::<LittleEndian>(value.len() as u32)?;
+		writer.write_all(value)?;
+		Ok(position)
+	}
+
+	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<LogEntry> {
+		let position = reader.seek(SeekFrom::Current(0))?;
+		let key_size = reader.read_u32::<LittleEndian>()?;
+		let mut key = vec![0u8; key_size as usize];
+		reader.read_exact(&mut key)?;
+		let value_size = reader.read_u32::<LittleEndian>()?;
+		let mut value = vec![0u8; value_size as usize];
+		reader.read_exact(&mut value)?;
+		Ok(LogEntry { position, key, value })
+	}
+
+	fn len(key: &[u8], value: &[u8]) -> usize {
+		LogEntry::ENTRY_STATIC_SIZE + key.len() + value.len()
+	}
+}
+
+struct LogIterator {
+	file: BufReader<File>,
+}
+
+impl LogIterator {
+	fn new<P: AsRef<Path>>(path: P) -> Result<LogIterator> {
+		let file = fs::OpenOptions::new()
+			.write(false)
+			.read(true)
+			.create_new(false)
+			.open(&path)?;
+
+		Ok(LogIterator { file: BufReader::new(file) })
+	}
+}
+
+impl Iterator for LogIterator {
+	type Item = Result<LogEntry>;
+
+	fn next(&mut self) -> Option<Result<LogEntry>> {
+		match LogEntry::read(&mut self.file) {
+			Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => None,
+			Err(err) => Some(Err(err.into())),
+			Ok(res) => Some(Ok(res)),
 		}
 	}
 }
