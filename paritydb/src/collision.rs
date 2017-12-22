@@ -1,3 +1,4 @@
+use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -34,13 +35,13 @@ pub struct Collision {
 #[derive(Debug)]
 pub struct IndexEntry {
     position: u64,
-	// TODO: we can optimize our implementation for constant value sizes
+	// TODO: we can optimize this data structure for constant value sizes
     size: usize,
 }
 
 impl Collision {
 	fn collision_file_path<P: AsRef<Path>>(path: P, prefix: u32) -> PathBuf {
-		let collision_file_name = format!("collision-{}.db", prefix);
+		let collision_file_name = format!("collision-{}.log", prefix);
 		path.as_ref().join(collision_file_name)
 	}
 
@@ -145,7 +146,49 @@ impl Collision {
 	pub fn compact(&mut self) -> Result<()> {
 		unimplemented!()
 	}
+
+	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator<btree_map::Values<'a, Vec<u8>, IndexEntry>>> {
+		CollisionLogIterator::new(&self.path, self.index.values())
+	}
 }
+
+pub struct CollisionLogIterator<I> {
+	index_iter: I,
+	file: BufReader<File>,
+}
+
+impl<I> CollisionLogIterator<I> {
+	fn new<P: AsRef<Path>>(path: P, index_iter: I) -> Result<CollisionLogIterator<I>> {
+		let file = fs::OpenOptions::new()
+			.read(true)
+			.open(&path)?;
+
+		let file = BufReader::new(file);
+
+		Ok(CollisionLogIterator { index_iter, file })
+	}
+}
+
+impl<'a, I: Iterator<Item=&'a IndexEntry>> Iterator for CollisionLogIterator<I> {
+	type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		self.index_iter.next().and_then(|entry| {
+			let mut read_next = || {
+				self.file.seek(SeekFrom::Start(entry.position))?;
+				let entry = LogEntry::read(&mut self.file)?;
+				Ok((entry.key,
+					entry.value.expect("index only points to live entries; qed")))
+			};
+
+			match read_next() {
+				Err(err) => Some(Err(err)),
+				Ok(res) => Some(Ok(res)),
+			}
+		})
+	}
+}
+
 
 #[derive(Debug)]
 struct LogEntry {
@@ -243,5 +286,28 @@ mod tests {
 
 		let mut collision = Collision::open(temp.path(), 0).unwrap().unwrap();
 		assert_eq!(collision.get(b"hello").unwrap().unwrap(), b"world");
+	}
+
+	#[test]
+	fn test_iter() {
+		let temp = tempdir::TempDir::new("test_roundtrip").unwrap();
+
+		{
+			let mut collision = Collision::create(temp.path(), 0).unwrap();
+			collision.put(b"0", b"0").unwrap();
+			collision.put(b"2", b"2").unwrap();
+			collision.put(b"1", b"1").unwrap();
+			collision.put(b"4", b"4").unwrap();
+			collision.put(b"3", b"3").unwrap();
+			collision.delete(b"4").unwrap();
+		}
+
+		let mut collision = Collision::open(temp.path(), 0).unwrap().unwrap();
+		let collision: Vec<_> = collision.iter().unwrap().flat_map(|entry| entry.ok()).collect();
+
+		let expected = vec![(b"0", b"0"), (b"1", b"1"), (b"2", b"2"), (b"3", b"3")];
+		let expected: Vec<_> = expected.iter().map(|e| (e.0.to_vec(), e.1.to_vec())).collect();
+
+		assert_eq!(collision, expected);
 	}
 }
