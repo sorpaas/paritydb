@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{btree_set, BTreeMap, BTreeSet};
 use std::collections::btree_map::Entry;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{PathBuf, Path};
 use std::{cmp, fs};
@@ -74,6 +75,7 @@ pub struct Database {
 	journal: Journal,
 	metadata: Metadata,
 	metadata_mmap: Mmap,
+	collisions: HashMap<u32, Collision>,
 	mmap: Mmap,
 	lock_file: File,
 }
@@ -154,6 +156,16 @@ impl Database {
 			flush.delete()?;
 		}
 
+		let mut collisions = HashMap::new();
+
+		for prefix in metadata.collided_prefixes() {
+			let collision_file = Collision::open(&path, prefix)?.expect(
+				"prefix is declared as collided in metadata; \
+				 collision file should exist; qed");
+
+			collisions.insert(prefix, collision_file);
+		}
+
 		Ok(Database {
 			path: path.as_ref().to_owned(),
 			options,
@@ -161,6 +173,7 @@ impl Database {
 			metadata,
 			metadata_mmap,
 			mmap,
+			collisions,
 			lock_file,
 		})
 	}
@@ -189,24 +202,27 @@ impl Database {
 
 		let prefix_bits = self.options.external.key_index_bits;
 		let metadata = self.metadata.clone();
+		let ref mut collisions = self.collisions;
 
 		for era in self.journal.drain_front(to_flush) {
 			{
 				let (collided_operations, operations): (Vec<_>, Vec<_>) =
 					era.iter().partition(|op| {
 						let key = Key::new(op.key(), prefix_bits);
-						metadata.collided_prefix(key.prefix)
+						collisions.contains_key(&key.prefix)
 					});
 
+				// flush operations for collided prefixes to their own prefix file
 				for op in collided_operations {
 					let key = Key::new(op.key(), prefix_bits);
-					let collision_file = Collision::open(&self.path, key.prefix)?;
-					let mut collision_file =
-						collision_file.expect("prefix is declared as collided; collision file should exist; qed");
+					let collision = collisions.get_mut(&key.prefix).expect(
+						"prefix is declared as collided; \
+						 collision file should exist in collisions index; qed");
 
-					collision_file.apply(op);
+					collision.apply(op);
 				}
 
+				// flush everything else to the data file
 				let flush = Flush::new(
 					&self.path,
 					&self.options,
@@ -248,13 +264,8 @@ impl Database {
 			return Ok(None);
 		}
 
-		if self.metadata.collided_prefix(key.prefix) {
-			let collision_file = Collision::open(&self.path, key.prefix)?;
-			if let Some(mut c) = collision_file {
-				return Ok(c.get(key.key)?.map(Value::Owned))
-			} else {
-				return Ok(None)
-			}
+		if let Some(collision) = self.collisions.get(&key.prefix) {
+			return Ok(collision.get(key.key)?.map(Value::Owned))
 		}
 
 		let offset = key.prefix as usize * self.options.record_offset;
@@ -321,6 +332,8 @@ impl Database {
 		let collisions = self.collisions()?;
 
 		let mut collided_prefixes = Vec::new();
+		let mut collision_files = Vec::new();
+
 		for (prefix, keys) in collisions.iter() {
 			let mut collision_file = Collision::create(&self.path, *prefix)?;
 
@@ -331,6 +344,7 @@ impl Database {
 				collision_file.put(&key, &value.to_vec());
 			}
 
+			collision_files.push(collision_file);
 			collided_prefixes.push(prefix);
 		}
 
@@ -362,6 +376,12 @@ impl Database {
 			}
 
 			self.metadata_mmap.flush()?;
+		}
+
+		// update collisions index
+		for collision_file in collision_files {
+			let prev = self.collisions.insert(collision_file.prefix(), collision_file);
+			assert!(prev.is_none())
 		}
 
 		Ok(())

@@ -49,8 +49,10 @@ impl Metadata {
 		self.collided_prefixes.set(prefix as usize, true);
 	}
 
-	pub fn collided_prefix(&self, prefix: u32) -> bool {
-		self.collided_prefixes.get(prefix as usize).unwrap_or(false)
+	pub fn collided_prefixes(&self) -> Vec<u32> {
+		self.collided_prefixes.iter().enumerate().filter_map(|(i, b)| {
+			if b { Some(i as u32) } else { None }
+		}).collect()
 	}
 
 	/// Returns bytes representation of `Metadata`.

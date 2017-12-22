@@ -25,6 +25,7 @@ use transaction::Operation;
 /// Alternative: use exactly the same strategy as used for the data file but
 /// ignoring the first `n` bits of the prefix and adding extra bits as needed
 ///
+#[derive(Debug)]
 pub struct Collision {
 	index: BTreeMap<Vec<u8>, IndexEntry>,
 	prefix: u32,
@@ -141,6 +142,10 @@ impl Collision {
 			Operation::Delete(key) => self.delete(key),
 			Operation::Insert(key, value) => self.put(key, value),
 		}
+	}
+
+	pub fn prefix(&self) -> u32 {
+		self.prefix
 	}
 
 	pub fn compact(&mut self) -> Result<()> {
