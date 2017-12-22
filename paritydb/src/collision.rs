@@ -16,8 +16,13 @@ use transaction::Operation;
 /// operations are appended to the log file, and the in-memory BTree maps the
 /// keys to their position in the log file.
 ///
-/// Idea: use exactly the same strategy as used for the data file but ignoring
-/// the first `n` bits of the prefix and adding extra bits as needed
+/// Idea: grow the log file in chunks (instead of appending to a file) and mmap
+/// it. When compacting the log we rewrite it with the keys sorted (since we
+/// have the in-memory index), so iteration should be fast on compacted log
+/// files.
+///
+/// Alternative: use exactly the same strategy as used for the data file but
+/// ignoring the first `n` bits of the prefix and adding extra bits as needed
 ///
 pub struct Collision {
 	index: BTreeMap<Vec<u8>, IndexEntry>,
@@ -61,8 +66,7 @@ impl Collision {
 
 		let path = Self::collision_file_path(path, prefix);
 		let file = fs::OpenOptions::new()
-			.write(true)
-			.read(true)
+			.append(true)
 			.create_new(true)
 			.open(&path)?;
 
@@ -74,8 +78,7 @@ impl Collision {
 	pub fn open<P: AsRef<Path>>(path: P, prefix: u32) -> Result<Option<Collision>> {
 		let path = Self::collision_file_path(path, prefix);
 		let open_options = fs::OpenOptions::new()
-			.write(true)
-			.read(true)
+			.append(true)
 			.open(&path);
 
 		let file = match open_options {
@@ -106,9 +109,7 @@ impl Collision {
 		if let Some(entry) = self.index.get(key) {
 			// TODO: cache file descriptors if necessary
 			let file = fs::OpenOptions::new()
-				.write(false)
 				.read(true)
-				.create_new(false)
 				.open(&self.path)?;
 
 			let mut file = BufReader::new(file);
@@ -173,9 +174,7 @@ struct LogIterator {
 impl LogIterator {
 	fn new<P: AsRef<Path>>(path: P) -> Result<LogIterator> {
 		let file = fs::OpenOptions::new()
-			.write(false)
 			.read(true)
-			.create_new(false)
 			.open(&path)?;
 
 		Ok(LogIterator { file: BufReader::new(file) })
