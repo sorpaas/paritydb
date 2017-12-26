@@ -319,13 +319,13 @@ impl Database {
 			match (r, c) {
 				(&Err(_), _) => Ordering::Less,
 				(_, &Err(_)) => Ordering::Greater,
-				(&Ok(ref r), &Ok(ref c)) => r.key_raw_slice().cmp(&c.0),
+				(&Ok(ref r), &Ok(ref c)) => r.key().cmp(&c.0),
 			}
 		}).map(|either| {
 			match either {
 				EitherOrBoth::Left(Err(err)) => Err(err.into()),
 				EitherOrBoth::Right(Err(err)) => Err(err),
-				EitherOrBoth::Left(Ok(r)) => Ok((Cow::Borrowed(r.key_raw_slice()), Value::Record(r))),
+				EitherOrBoth::Left(Ok(r)) => Ok((Cow::Borrowed(r.key()), Value::Record(r))),
 				EitherOrBoth::Right(Ok(c)) => Ok((Cow::Owned(c.0), Value::Owned(c.1))),
 				EitherOrBoth::Both(_, _) =>
 					unreachable!("value exists in collision file; \
@@ -341,7 +341,7 @@ impl Database {
 		let mut collisions: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
 
 		for record in self.record_iter()? {
-			let key = record?.key_raw_slice();
+			let key = record?.key();
 
 			let prefix = Key::new(key, self.options.external.key_index_bits).prefix;
 			match collisions.entry(prefix) {

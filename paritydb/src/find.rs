@@ -145,10 +145,8 @@ mod tests {
 
 	fn expect_record(a: RecordResult, key: &[u8], value: &[u8]) {
 		if let RecordResult::Found(record) = a {
-			let mut k = Vec::new();
-			k.resize(key.len(), 0);
-			record.read_key(&mut k);
-			assert!(record.key_is_equal(key), "Invalid key. Expected: {:?}, got: {:?}", key, k);
+			let k = record.key();
+			assert_eq!(k, key, "Invalid key. Expected: {:?}, got: {:?}", key, k);
 
 			let mut v = Vec::new();
 			v.resize(value.len(), 0);
@@ -243,10 +241,7 @@ mod tests {
 
 		let keys: Vec<_> = records.map(|record| {
 			let record = record.unwrap();
-			let mut v = Vec::with_capacity(key_size);
-			v.resize(key_size, 0);
-			record.read_key(&mut v);
-			v
+			record.key().to_vec()
 		}).collect();
 
 		assert_eq!(

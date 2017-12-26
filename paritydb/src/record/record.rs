@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use byteorder::{LittleEndian, ByteOrder};
 
 use field::view::FieldsView;
@@ -19,7 +17,7 @@ pub enum ValueSize {
 /// A view onto database record.
 #[derive(Debug, PartialEq)]
 pub struct Record<'a> {
-	key: FieldsView<'a>,
+	key: &'a [u8],
 	value: FieldsView<'a>,
 	len: usize,
 }
@@ -31,6 +29,8 @@ impl<'a> Record<'a> {
 
 		let view = FieldsView::new(data, field_body_size);
 		let (key, rest) = view.split_at(key_size);
+		let key = key.raw_slice().expect("only returns None when addressed value isn't stored in a single field; \
+										  keys are always stored in a single field; qed");
 
 		match value_size {
 			ValueSize::Constant(value_size) => {
@@ -59,21 +59,9 @@ impl<'a> Record<'a> {
 		LittleEndian::read_u32(&data)
 	}
 
-	/// Returns true of record key is equal to given slice.
-	// TODO [ToDr] IMHO it would be better to get rid of those methods and expose key and value directly:
-	// record.key() == <sth>
-	pub fn key_is_equal(&self, slice: &[u8]) -> bool {
-		self.key == slice
-	}
-
-	/// Returns true of record key is strictly greater than given slice.
-	pub fn key_is_greater(&self, slice: &[u8]) -> bool {
-		self.key > slice
-	}
-
-	/// Returns an ordering between self and the given slice if both have the same length.
-	pub fn key_cmp(&self, slice: &[u8]) -> Option<Ordering> {
-		self.key.partial_cmp(&slice)
+	/// Returns record's key.
+	pub fn key(&self) -> &'a [u8] {
+		self.key
 	}
 
 	/// Returns true of record value is equal to given slice.
@@ -81,23 +69,10 @@ impl<'a> Record<'a> {
 		self.value == slice
 	}
 
-	/// Returns underlying key.
-	pub fn key_raw_slice(&self) -> &'a [u8] {
-		self.key.raw_slice()
-			.expect("only returns None when addressed value isn't stored in a single field; \
-					 keys are always stored in a single field; qed")
-	}
-
 	/// Returns underlying value if it is a continuous slice of memory,
 	/// otherwise returns None.
 	pub fn value_raw_slice(&self) -> Option<&'a [u8]> {
 		self.value.raw_slice()
-	}
-
-	/// Reads record key to given slice.
-	/// Panics if the size does not match.
-	pub fn read_key(&self, slice: &mut [u8]) {
-		self.key.copy_to_slice(slice);
 	}
 
 	/// Reads value to given slice.
@@ -139,22 +114,20 @@ mod tests {
 			1, 0xfa, 0xfb, 0xfc, 1, 2, 3, 4, 5,
 			1, 0xfd, 0xfe, 0xff, 6, 7, 8, 9, 10,
 		];
-		let mut key = [0; 3];
-		let mut value = [0; 5];
-
 
 		let record = Record::new(&data, body_size, value_size, key_size);
-		record.read_key(&mut key);
+		let key = record.key();
 		assert_eq!(key, [0xfa, 0xfb, 0xfc]);
-		assert!(record.key_is_equal(&key));
+
+		let mut value = [0; 5];
 		assert_eq!(record.value_len(), 5);
 		record.read_value(&mut value);
 		assert_eq!(value, [1, 2, 3, 4, 5]);
 
 		let record = Record::new(&data[body_size + field::HEADER_SIZE..], body_size, value_size, key_size);
-		record.read_key(&mut key);
+		let key = record.key();
 		assert_eq!(key, [0xfd, 0xfe, 0xff]);
-		assert!(record.key_is_equal(&key));
+
 		assert_eq!(record.value_len(), 5);
 		record.read_value(&mut value);
 		assert_eq!(value, [6, 7, 8, 9, 10]);
@@ -169,22 +142,21 @@ mod tests {
 			1, 0xfa, 0xfb, 3, 0, 0, 0, 1, 2, 3, 99,
 			1, 0xfc, 0xfd, 1, 0, 0, 0, 4, 0, 0, 0,
 		];
-		let mut key = [0; 2];
 		let mut value1 = [0; 3];
 		let mut value2 = [0; 1];
 
 		let record1 = Record::new(&data, body_size, value_size, key_size);
-		record1.read_key(&mut key);
-		assert_eq!(key, [0xfa, 0xfb]);
-		assert!(record1.key_is_equal(&key));
+		let key1 = record1.key();
+		assert_eq!(key1, [0xfa, 0xfb]);
+
 		assert_eq!(record1.value_len(), 3);
 		record1.read_value(&mut value1);
 		assert_eq!(value1, [1, 2, 3]);
 
 		let record2 = Record::new(&data[body_size + field::HEADER_SIZE..], body_size, value_size, key_size);
-		record2.read_key(&mut key);
-		assert_eq!(key, [0xfc, 0xfd]);
-		assert!(record2.key_is_equal(&key));
+		let key2 = record2.key();
+		assert_eq!(key2, [0xfc, 0xfd]);
+
 		assert_eq!(record2.value_len(), 1);
 		record2.read_value(&mut value2);
 		assert_eq!(value2, [4]);
