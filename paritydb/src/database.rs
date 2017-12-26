@@ -335,8 +335,6 @@ impl Database {
 	}
 
 	fn collisions(&self) -> Result<BTreeMap<u32, Vec<Vec<u8>>>> {
-		const MAX_COLLISIONS: usize = 3;
-
 		// FIXME: this is currently copying keys
 		let mut collisions: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
 
@@ -356,7 +354,9 @@ impl Database {
 
 		// drop prefixes that have a number of collisions lower than the allowed threshold
 		let collisions: BTreeMap<u32, Vec<Vec<u8>>> =
-			collisions.into_iter().filter(|p| p.1.len() >= MAX_COLLISIONS).collect();
+			collisions.into_iter().filter(|p| {
+				p.1.len() >= self.options.external.max_prefix_collisions
+			}).collect();
 
 		Ok(collisions)
 	}

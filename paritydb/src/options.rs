@@ -54,6 +54,8 @@ pub struct Options {
 	pub key_len: usize,
 	/// Value length in bytes.
 	pub value_len: ValuesLen,
+	/// Maximum number of collisions per prefix before moving data to its own file.
+	pub max_prefix_collisions: usize,
 }
 
 impl Default for Options {
@@ -64,6 +66,7 @@ impl Default for Options {
 			key_index_bits: 8,
 			key_len: 32,
 			value_len: ValuesLen::Constant(64),
+			max_prefix_collisions: 6,
 		}
 	}
 }
@@ -85,7 +88,7 @@ impl InternalOptions {
 				format!("Not satisfied: 0 < {} <= 100", external.extend_threshold_percent)
 			));
 		}
-		if external.key_index_bits as usize >  external.key_len * 8 {
+		if external.key_index_bits as usize > external.key_len * 8 {
 			bail!(ErrorKind::InvalidOptions(
 				"key_index_bits",
 				format!("{} is greater than key length: {}", external.key_index_bits, external.key_len * 8)
@@ -96,6 +99,13 @@ impl InternalOptions {
 			bail!(ErrorKind::InvalidOptions(
 				"key_index_bits",
 				"must not be 0.".into()
+			));
+		}
+
+		if external.max_prefix_collisions < 1 {
+			bail!(ErrorKind::InvalidOptions(
+				"max_prefix_collisions",
+				"must be greater than 0.".into()
 			));
 		}
 
