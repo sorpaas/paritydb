@@ -1,7 +1,7 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{btree_set, BTreeMap, BTreeSet};
+use std::collections::{btree_map, btree_set, BTreeMap, BTreeSet};
 use std::collections::btree_map::Entry;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::{PathBuf, Path};
 use std::{cmp, fs};
@@ -9,6 +9,8 @@ use std::fs::File;
 
 use fs2::FileExt;
 use memmap::{Mmap, Protection};
+use itertools::Itertools;
+use itertools::EitherOrBoth;
 
 use collision::Collision;
 use error::{ErrorKind, Result};
@@ -75,7 +77,7 @@ pub struct Database {
 	journal: Journal,
 	metadata: Metadata,
 	metadata_mmap: Mmap,
-	collisions: HashMap<u32, Collision>,
+	collisions: BTreeMap<u32, Collision>,
 	mmap: Mmap,
 	lock_file: File,
 }
@@ -156,7 +158,7 @@ impl Database {
 			flush.delete()?;
 		}
 
-		let mut collisions = HashMap::new();
+		let mut collisions = BTreeMap::new();
 
 		for prefix in metadata.collided_prefixes() {
 			let collision_file = Collision::open(&path, prefix)?.expect(
@@ -201,7 +203,6 @@ impl Database {
 		let to_flush = cmp::min(len - self.options.external.journal_eras, max);
 
 		let prefix_bits = self.options.external.key_index_bits;
-		let metadata = self.metadata.clone();
 		let ref mut collisions = self.collisions;
 
 		for era in self.journal.drain_front(to_flush) {
@@ -293,10 +294,44 @@ impl Database {
 		let field_body_size = self.options.field_body_size;
 		let key_size = self.options.external.key_len;
 		let value_size = self.options.value_size;
+		let collisions = self.collisions.iter();
 
-		let record_iter = find::iter(data, occupied_offset_iter, field_body_size, key_size, value_size)?;
+		let record_iter = find::iter(
+			data,
+			occupied_offset_iter,
+			field_body_size,
+			key_size,
+			value_size,
+		)?;
 
 		Ok(record_iter)
+	}
+
+	// TODO: refactor to avoid boxed iterator
+	fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
+		let collided_records = self.collisions.values()
+			.flat_map(|it| it.iter().ok()) // FIXME: swallowing errors here
+			.flat_map(|it| it);
+
+		let records = self.record_iter()?;
+
+		Ok(Box::new(records.merge_join_by(collided_records, |r, c| {
+			match (r, c) {
+				(&Err(_), _) => Ordering::Less,
+				(_, &Err(_)) => Ordering::Greater,
+				(&Ok(ref r), &Ok(ref c)) => r.key_raw_slice().cmp(&c.0),
+			}
+		}).map(|either| {
+			match either {
+				EitherOrBoth::Left(Err(err)) => Err(err.into()),
+				EitherOrBoth::Right(Err(err)) => Err(err),
+				EitherOrBoth::Left(Ok(r)) => Ok((Cow::Borrowed(r.key_raw_slice()), Value::Record(r))),
+				EitherOrBoth::Right(Ok(c)) => Ok((Cow::Owned(c.0), Value::Owned(c.1))),
+				EitherOrBoth::Both(_, _) =>
+					unreachable!("value exists in collision file; \
+								  so cannot exist in data file; qed"),
+			}
+		})))
 	}
 
 	fn collisions(&self) -> Result<BTreeMap<u32, Vec<Vec<u8>>>> {

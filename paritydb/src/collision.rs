@@ -152,18 +152,19 @@ impl Collision {
 		unimplemented!()
 	}
 
-	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator<btree_map::Values<'a, Vec<u8>, IndexEntry>>> {
+	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator> {
 		CollisionLogIterator::new(&self.path, self.index.values())
 	}
 }
 
-pub struct CollisionLogIterator<I> {
-	index_iter: I,
+pub struct CollisionLogIterator<'a> {
+	index_iter: btree_map::Values<'a, Vec<u8>, IndexEntry>,
 	file: BufReader<File>,
 }
 
-impl<I> CollisionLogIterator<I> {
-	fn new<P: AsRef<Path>>(path: P, index_iter: I) -> Result<CollisionLogIterator<I>> {
+impl<'a> CollisionLogIterator<'a> {
+	fn new<P: AsRef<Path>>(path: P, index_iter: btree_map::Values<'a, Vec<u8>, IndexEntry>)
+						   -> Result<CollisionLogIterator<'a>> {
 		let file = fs::OpenOptions::new()
 			.read(true)
 			.open(&path)?;
@@ -174,7 +175,7 @@ impl<I> CollisionLogIterator<I> {
 	}
 }
 
-impl<'a, I: Iterator<Item=&'a IndexEntry>> Iterator for CollisionLogIterator<I> {
+impl<'a> Iterator for CollisionLogIterator<'a> {
 	type Item = Result<(Vec<u8>, Vec<u8>)>;
 
 	fn next(&mut self) -> Option<Self::Item> {

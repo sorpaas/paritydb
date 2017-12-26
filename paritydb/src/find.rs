@@ -1,5 +1,7 @@
 use std::cmp;
+use std::collections::btree_map;
 
+use collision::{Collision, CollisionLogIterator};
 use field::iterator::FieldHeaderIterator;
 use field::{Error, Header, field_size};
 use prefix_tree::OccupiedPrefixesIterator;
@@ -50,6 +52,7 @@ pub fn find_record<'a>(
 
 pub fn iter<'a>(
 	data: &'a [u8],
+	// TODO: rename to occupied_prefix_iter
 	occupied_offset_iter: OccupiedPrefixesIterator<'a>,
 	field_body_size: usize,
 	key_size: usize,
@@ -59,7 +62,16 @@ pub fn iter<'a>(
 	let peek_offset = None;
 	let field_size = field_size(field_body_size);
 
-	Ok(RecordIterator { data, occupied_offset_iter, offset, peek_offset, field_body_size, field_size, key_size, value_size })
+	Ok(RecordIterator {
+		data,
+		occupied_offset_iter,
+		offset,
+		peek_offset,
+		field_body_size,
+		field_size,
+		key_size,
+		value_size
+	})
 }
 
 pub struct RecordIterator<'a, T = OccupiedPrefixesIterator<'a>> {
@@ -79,6 +91,7 @@ impl<'a, T: Iterator<Item=u32>> Iterator for RecordIterator<'a, T> {
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
 			if let None = self.peek_offset {
+				// TODO: we should ignore collided prefixes
 				let occupied_offset = self.occupied_offset_iter.next();
 
 				if let Some(occupied_offset) = occupied_offset {
