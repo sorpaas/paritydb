@@ -160,7 +160,7 @@ impl Database {
 
 		let mut collisions = BTreeMap::new();
 
-		for prefix in metadata.collided_prefixes() {
+		for prefix in metadata.collided_prefixes.prefixes_iter() {
 			let collision_file = Collision::open(&path, prefix)?.expect(
 				"prefix is declared as collided in metadata; \
 				 collision file should exist; qed");
@@ -261,12 +261,12 @@ impl Database {
 		let value_size = self.options.value_size;
 
 		let key = Key::new(key, self.options.external.key_index_bits);
-		if !self.metadata.prefixes.has(key.prefix).unwrap_or(false) {
-			return Ok(None);
-		}
-
 		if let Some(collision) = self.collisions.get(&key.prefix) {
 			return Ok(collision.get(key.key)?.map(Value::Owned))
+		}
+
+		if !self.metadata.prefixes.has(key.prefix).unwrap_or(false) {
+			return Ok(None);
 		}
 
 		let offset = key.prefix as usize * self.options.record_offset;
@@ -290,7 +290,7 @@ impl Database {
 
 	pub fn record_iter(&self) -> Result<RecordIterator> {
 		let data = unsafe { &self.mmap.as_slice() };
-		let occupied_offset_iter = self.metadata.prefixes.prefixes_iter();
+		let occupied_prefixes_iter = self.metadata.prefixes.prefixes_iter();
 		let field_body_size = self.options.field_body_size;
 		let key_size = self.options.external.key_len;
 		let value_size = self.options.value_size;
@@ -298,7 +298,7 @@ impl Database {
 
 		let record_iter = find::iter(
 			data,
-			occupied_offset_iter,
+			occupied_prefixes_iter,
 			field_body_size,
 			key_size,
 			value_size,

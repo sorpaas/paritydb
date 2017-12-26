@@ -53,7 +53,7 @@ pub fn find_record<'a>(
 pub fn iter<'a>(
 	data: &'a [u8],
 	// TODO: rename to occupied_prefix_iter
-	occupied_offset_iter: OccupiedPrefixesIterator<'a>,
+	occupied_prefixes_iter: OccupiedPrefixesIterator<'a>,
 	field_body_size: usize,
 	key_size: usize,
 	value_size: ValueSize
@@ -64,7 +64,7 @@ pub fn iter<'a>(
 
 	Ok(RecordIterator {
 		data,
-		occupied_offset_iter,
+		occupied_prefixes_iter,
 		offset,
 		peek_offset,
 		field_body_size,
@@ -76,7 +76,7 @@ pub fn iter<'a>(
 
 pub struct RecordIterator<'a, T = OccupiedPrefixesIterator<'a>> {
 	data: &'a [u8],
-	occupied_offset_iter: T,
+	occupied_prefixes_iter: T,
 	offset: u32,
 	peek_offset: Option<u32>,
 	field_body_size: usize,
@@ -91,16 +91,15 @@ impl<'a, T: Iterator<Item=u32>> Iterator for RecordIterator<'a, T> {
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
 			if let None = self.peek_offset {
-				// TODO: we should ignore collided prefixes
-				let occupied_offset = self.occupied_offset_iter.next();
+				let occupied_prefix = self.occupied_prefixes_iter.next();
 
-				if let Some(occupied_offset) = occupied_offset {
-					if occupied_offset < self.offset {
+				if let Some(occupied_prefix) = occupied_prefix {
+					if occupied_prefix < self.offset {
 						continue;
 					}
 				}
 
-				self.peek_offset = occupied_offset;
+				self.peek_offset = occupied_prefix;
 				self.offset = self.peek_offset.unwrap_or(self.offset);
 			}
 
@@ -219,7 +218,7 @@ mod tests {
 	#[test]
 	fn test_iter() {
 		let data = &[1, 1, 1, 0, 0, 0, 1, 2, 2, 1, 3, 3, 0, 0, 0, 0, 0, 0, 1, 4, 4, 1, 5, 5];
-		let occupied_offset_iter = vec![0u32, 2u32, 3u32, 6u32].into_iter();
+		let occupied_prefixes_iter = vec![0u32, 2u32, 3u32, 6u32].into_iter();
 
 		let offset = 0;
 		let peek_offset = None;
@@ -230,7 +229,7 @@ mod tests {
 
 		let records = RecordIterator {
 			data,
-			occupied_offset_iter,
+			occupied_prefixes_iter,
 			offset,
 			peek_offset,
 			field_body_size,

@@ -16,10 +16,12 @@ pub struct Metadata {
 	/// Number of bytes occupied by records
 	/// NOTE: it does not include field headers!
 	pub occupied_bytes: u64,
+	/// Number of bits from the key used for prefix
+	pub prefix_bits: u8,
 	/// Prefix tree
 	pub prefixes: PrefixTree,
 	/// Prefixes with too many collisions that are stored separately
-	pub collided_prefixes: BitVec<u8>,
+	pub collided_prefixes: PrefixTree,
 }
 
 impl Metadata {
@@ -46,13 +48,8 @@ impl Metadata {
 	}
 
 	pub fn add_prefix_collision(&mut self, prefix: u32) {
-		self.collided_prefixes.set(prefix as usize, true);
-	}
-
-	pub fn collided_prefixes(&self) -> Vec<u32> {
-		self.collided_prefixes.iter().enumerate().filter_map(|(i, b)| {
-			if b { Some(i as u32) } else { None }
-		}).collect()
+		self.collided_prefixes.insert(prefix);
+		self.prefixes.remove(prefix);
 	}
 
 	/// Returns bytes representation of `Metadata`.
@@ -88,62 +85,60 @@ pub mod bytes {
 		/// Copy bytes to given slice.
 		/// Panics if the length are not matching.
 		pub fn copy_to_slice(&self, data: &mut [u8]) {
-			let mut cursor = Cursor::new(data);
-			cursor.write_u16::<LittleEndian>(self.metadata.db_version);
-			cursor.write_u64::<LittleEndian>(self.metadata.occupied_bytes);
-			cursor.write_all(self.metadata.collided_prefixes.storage());
+			let prefix_leaves_offset = prefix_leaves_offset();
+			let collided_prefix_leaves_offset = collided_prefix_leaves_offset(self.metadata.prefix_bits);
 
-			let leaves = self.metadata.prefixes.leaves();
-			cursor.write_all(leaves);
+			let prefix_leaves = self.metadata.prefixes.leaves();
+			data[prefix_leaves_offset..collided_prefix_leaves_offset].copy_from_slice(prefix_leaves);
+
+			let collided_prefix_leaves = self.metadata.collided_prefixes.leaves();
+			data[collided_prefix_leaves_offset..].copy_from_slice(collided_prefix_leaves);
+
+			LittleEndian::write_u16(data, self.metadata.db_version);
+			LittleEndian::write_u64(&mut data[Self::VERSION_SIZE..], self.metadata.occupied_bytes);
 		}
 
 		/// Return bytes length of the `Metadata`.
 		pub fn len(&self) -> usize {
-			len(self.metadata.prefixes.prefix_bits())
+			len(self.metadata.prefix_bits)
 		}
+	}
+
+	#[inline]
+	pub fn prefix_leaves_offset() -> usize {
+		Metadata::VERSION_SIZE + Metadata::OCCUPIED_SIZE
+	}
+
+	#[inline]
+	pub fn collided_prefix_leaves_offset(prefix_bits: u8) -> usize {
+		Metadata::VERSION_SIZE + Metadata::OCCUPIED_SIZE + PrefixTree::leaf_data_len(prefix_bits)
 	}
 
 	/// Returns expected `Metadata` bytes len given prefix bits.
 	pub fn len(prefix_bits: u8) -> usize {
 		Metadata::VERSION_SIZE +
 			Metadata::OCCUPIED_SIZE +
-			((2 << (prefix_bits - 1)) / 8) + // for the collided_prefixes bitvec
+			PrefixTree::leaf_data_len(prefix_bits) +
 			PrefixTree::leaf_data_len(prefix_bits)
 	}
 
 	/// Read `Metadata` from given slice.
 	pub fn read(data: &[u8], prefix_bits: u8) -> super::Metadata {
-		let mut cursor = Cursor::new(data);
-		let db_version = cursor.read_u16::<LittleEndian>().unwrap();
-		let occupied_bytes = cursor.read_u64::<LittleEndian>().unwrap();
+		let db_version = LittleEndian::read_u16(&data[..Metadata::VERSION_SIZE]);
+		let occupied_bytes = LittleEndian::read_u64(&data[Metadata::VERSION_SIZE..]);
 
-		let collided_prefixes_len = (2 << (prefix_bits - 1)) / 8;
-		let mut collided_prefixes_buf = vec![0; collided_prefixes_len];
-		cursor.read_exact(&mut collided_prefixes_buf);
+		let prefix_leaves_offset = prefix_leaves_offset();
+		let collided_prefix_leaves_offset = collided_prefix_leaves_offset(prefix_bits);
 
-		// FIXME: clean this up
-		let mut collided_prefixes = BitVec::default();
-		collided_prefixes.grow(2 << (prefix_bits - 1), false);
-		for (idx, byte) in collided_prefixes_buf.iter().enumerate() {
-			let mut current = 1;
-			for i in 0..8 {
-				if byte & current == current {
-					collided_prefixes.set((idx * 8 + i), true);
-				}
-				current <<= 1;
-			}
-		}
-
-		let prefixes_len = PrefixTree::leaf_data_len(prefix_bits);
-		let mut prefixes_buf = vec![0; prefixes_len];
-		cursor.read_exact(&mut prefixes_buf);
-		let prefixes = PrefixTree::from_leaves(&prefixes_buf, prefix_bits);
+		let prefixes = PrefixTree::from_leaves(&data[prefix_leaves_offset..collided_prefix_leaves_offset], prefix_bits);
+		let collided_prefixes = PrefixTree::from_leaves(&data[collided_prefix_leaves_offset..], prefix_bits);
 
 		assert_eq!(db_version, super::Metadata::DB_VERSION);
 
 		super::Metadata {
 			db_version,
 			occupied_bytes,
+			prefix_bits,
 			prefixes,
 			collided_prefixes,
 		}
