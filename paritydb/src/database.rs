@@ -281,14 +281,14 @@ impl Database {
 
 	/// Returns an iterator over the database key-value pairs.
 	pub fn iter(&self) -> Result<DatabaseIterator> {
-		let record_iter = self.record_iter()?;
+		let record_collisions_iter = self.record_collisions_iter()?;
 		let journal_iter = self.journal.iter();
 		let pending = IteratorValue::None;
 
-		Ok(DatabaseIterator { record_iter, journal_iter, pending })
+		Ok(DatabaseIterator { record_collisions_iter, journal_iter, pending })
 	}
 
-	fn record_iter(&self) -> Result<RecordIterator> {
+	pub fn record_iter(&self) -> Result<RecordIterator> {
 		let data = unsafe { &self.mmap.as_slice() };
 		let occupied_offset_iter = self.metadata.prefixes.prefixes_iter();
 		let field_body_size = self.options.field_body_size;
@@ -308,7 +308,7 @@ impl Database {
 	}
 
 	// TODO: refactor to avoid boxed iterator
-	fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
+	pub fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
 		let collided_records = self.collisions.values()
 			.flat_map(|it| it.iter().ok()) // FIXME: swallowing errors here
 			.flat_map(|it| it);
@@ -433,7 +433,7 @@ impl Drop for Database {
 enum IteratorValue<'a> {
 	None,
 	Journal(Operation<'a>),
-	DB(Record<'a>),
+	DB((Cow<'a, [u8]>, Value<'a>)),
 }
 
 impl<'a> IteratorValue<'a> {
@@ -444,19 +444,19 @@ impl<'a> IteratorValue<'a> {
 
 pub struct DatabaseIterator<'a> {
 	journal_iter: btree_set::IntoIter<Operation<'a>>,
-	record_iter: find::RecordIterator<'a>,
+	record_collisions_iter: Box<Iterator<Item=Result<(Cow<'a, [u8]>, Value<'a>)>> + 'a>,
 	pending: IteratorValue<'a>,
 }
 
 impl<'a> Iterator for DatabaseIterator<'a> {
-	type Item = Result<(&'a [u8], Value<'a>)>;
+	type Item = Result<(Cow<'a, [u8]>, Value<'a>)>;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
 			let (operation, record) = match self.pending.take() {
 				IteratorValue::None => {
 					let j = self.journal_iter.next().map_or(IteratorValue::None, IteratorValue::Journal);
-					let db = match self.record_iter.next() {
+					let db = match self.record_collisions_iter.next() {
 						None => IteratorValue::None,
 						Some(Ok(r)) => IteratorValue::DB(r),
 						Some(Err(err)) => {
@@ -468,7 +468,7 @@ impl<'a> Iterator for DatabaseIterator<'a> {
 					(j, db)
 				},
 				j @ IteratorValue::Journal(_) => {
-					let db = match self.record_iter.next() {
+					let db = match self.record_collisions_iter.next() {
 						None => IteratorValue::None,
 						Some(Ok(r)) => IteratorValue::DB(r),
 						Some(Err(err)) => {
@@ -488,13 +488,13 @@ impl<'a> Iterator for DatabaseIterator<'a> {
 
 			#[inline]
 			// returns `None` if the operation is a `Delete` and we should skip to the next value
-			fn handle_journal_operation<'a>(o: Operation<'a>) -> Option<Result<(&'a [u8], Value<'a>)>> {
+			fn handle_journal_operation<'a>(o: Operation<'a>) -> Option<Result<(Cow<'a, [u8]>, Value<'a>)>> {
 				match o {
 					Operation::Delete(_) => {
 						None
 					},
 					Operation::Insert(key, value) => {
-						Some(Ok((key, Value::Raw(value))))
+						Some(Ok((Cow::Borrowed(key), Value::Raw(value))))
 					},
 				}
 			}
@@ -507,10 +507,10 @@ impl<'a> Iterator for DatabaseIterator<'a> {
 					};
 				},
 				(IteratorValue::None, IteratorValue::DB(r)) => {
-					return Some(Ok((r.key_raw_slice(), Value::from(r))));
+					return Some(Ok(r))
 				},
 				(IteratorValue::Journal(o), IteratorValue::DB(r)) => {
-					let ord = r.key_cmp(o.key()).expect(
+					let ord = (*r.0).partial_cmp(o.key()).expect(
 						"only returns None when compared keys don't have the same size; \
 						 all keys should have the same size; qed");
 
@@ -531,7 +531,7 @@ impl<'a> Iterator for DatabaseIterator<'a> {
 						},
 						Ordering::Less => {
 							self.pending = IteratorValue::Journal(o);
-							return Some(Ok((r.key_raw_slice(), Value::from(r))));
+							return Some(Ok(r))
 						},
 					};
 				},
