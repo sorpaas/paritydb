@@ -1,7 +1,3 @@
-use std::collections::HashSet;
-
-use bit_vec::BitVec;
-
 use prefix_tree::PrefixTree;
 
 /// A structure holding database metadata information.
@@ -60,11 +56,7 @@ impl Metadata {
 
 /// Metadata bytes manipulations.
 pub mod bytes {
-	use std::collections::HashSet;
-	use std::io::{Cursor, Read, Write};
-
-	use bit_vec::BitVec;
-	use byteorder::{LittleEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
+	use byteorder::{LittleEndian, ByteOrder};
 
 	use prefix_tree::PrefixTree;
 

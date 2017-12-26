@@ -9,7 +9,6 @@ use tiny_keccak::{sha3_256, Keccak};
 use error::{ErrorKind, Result};
 use flush::iterator::IdempotentOperationIterator;
 use flush::writer::OperationWriter;
-use key::Key;
 use metadata::{self, Metadata};
 use options::InternalOptions;
 use transaction::Operation;

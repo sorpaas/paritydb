@@ -1,7 +1,5 @@
 use std::cmp;
-use std::collections::btree_map;
 
-use collision::{Collision, CollisionLogIterator};
 use field::iterator::FieldHeaderIterator;
 use field::{Error, Header, field_size};
 use prefix_tree::OccupiedPrefixesIterator;

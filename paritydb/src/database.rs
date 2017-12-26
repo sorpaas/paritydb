@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{btree_map, btree_set, BTreeMap, BTreeSet};
+use std::collections::{btree_set, BTreeMap};
 use std::collections::btree_map::Entry;
 use std::io::Write;
 use std::path::{PathBuf, Path};
@@ -220,7 +220,7 @@ impl Database {
 						"prefix is declared as collided; \
 						 collision file should exist in collisions index; qed");
 
-					collision.apply(op);
+					collision.apply(op)?;
 				}
 
 				// flush everything else to the data file
@@ -240,7 +240,7 @@ impl Database {
 				flush.delete()?;
 			}
 
-			era.delete();
+			era.delete()?;
 		}
 
 		Ok(())
@@ -294,7 +294,6 @@ impl Database {
 		let field_body_size = self.options.field_body_size;
 		let key_size = self.options.external.key_len;
 		let value_size = self.options.value_size;
-		let collisions = self.collisions.iter();
 
 		let record_iter = find::iter(
 			data,
@@ -376,7 +375,7 @@ impl Database {
 				// FIXME: store a reference to the value in the return Map from collisions
 				let value = self.get(&key)?.expect("The key has been returned by the iterator; qed");
 				// FIXME: only need to copy the value if it isn't stored in a single field
-				collision_file.put(&key, &value.to_vec());
+				collision_file.put(&key, &value.to_vec())?;
 			}
 
 			collision_files.push(collision_file);
