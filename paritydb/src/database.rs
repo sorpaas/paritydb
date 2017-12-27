@@ -370,8 +370,9 @@ impl Database {
 	}
 
 	/// Finds prefixes that have a number of collisions higher than the configured threshold and
-	/// moves all their data to a separate file (one file for each collided prefix).
-	pub fn compact(&mut self) -> Result<()> {
+	/// moves all their data to a separate file (one file for each collided prefix). Returns a
+	/// vector of collided prefixes (empty if no collisions have been found).
+	pub fn compact(&mut self) -> Result<Vec<u32>> {
 		let collisions = self.collisions()?;
 
 		let mut collided_prefixes = Vec::new();
@@ -388,7 +389,7 @@ impl Database {
 			}
 
 			collision_files.push(collision_file);
-			collided_prefixes.push(prefix);
+			collided_prefixes.push(*prefix);
 		}
 
 		let deletions = collisions.values().flat_map(|ks| ks).map(|k| Operation::Delete(k));
@@ -409,7 +410,7 @@ impl Database {
 
 		// update metadata
 		{
-			for prefix in collided_prefixes {
+			for prefix in collided_prefixes.iter() {
 				self.metadata.add_prefix_collision(*prefix);
 			}
 
@@ -427,7 +428,7 @@ impl Database {
 			assert!(prev.is_none())
 		}
 
-		Ok(())
+		Ok(collided_prefixes)
 	}
 }
 
