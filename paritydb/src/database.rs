@@ -31,6 +31,7 @@ pub enum Value<'a> {
 	Raw(&'a [u8]),
 	/// DB record
 	Record(Record<'a>),
+	/// Owned data (collision file)
 	Owned(Vec<u8>),
 }
 
@@ -207,6 +208,7 @@ impl Database {
 
 		for era in self.journal.drain_front(to_flush) {
 			{
+				// partition operations by whether they affect collided prefixes
 				let (collided_operations, operations): (Vec<_>, Vec<_>) =
 					era.iter().partition(|op| {
 						let key = Key::new(op.key(), prefix_bits);
@@ -253,6 +255,7 @@ impl Database {
 			return Err(ErrorKind::InvalidKeyLen(self.options.external.key_len, key.len()).into());
 		}
 
+		// check if the key-value pair is currently journaled
 		if let Some(res) = self.journal.get(key) {
 			return Ok(Some(Value::Raw(res)));
 		}
@@ -261,10 +264,13 @@ impl Database {
 		let value_size = self.options.value_size;
 
 		let key = Key::new(key, self.options.external.key_index_bits);
+
+		// fetch from the collision file if this is a collided prefix
 		if let Some(collision) = self.collisions.get(&key.prefix) {
 			return Ok(collision.get(key.key)?.map(Value::Owned))
 		}
 
+		// check if there's any data stored on the data file for the given prefix
 		if !self.metadata.prefixes.has(key.prefix).unwrap_or(false) {
 			return Ok(None);
 		}
@@ -279,7 +285,7 @@ impl Database {
 		}
 	}
 
-	/// Returns an iterator over the database key-value pairs.
+	/// Returns an iterator over all the database key-value pairs.
 	pub fn iter(&self) -> Result<DatabaseIterator> {
 		let record_collisions_iter = self.record_collisions_iter()?;
 		let journal_iter = self.journal.iter();
@@ -288,7 +294,8 @@ impl Database {
 		Ok(DatabaseIterator { record_collisions_iter, journal_iter, pending })
 	}
 
-	pub fn record_iter(&self) -> Result<RecordIterator> {
+	/// Returns an iterator over only the database key-value pairs stored in the data file.
+	fn record_iter(&self) -> Result<RecordIterator> {
 		let data = unsafe { &self.mmap.as_slice() };
 		let occupied_prefixes_iter = self.metadata.prefixes.prefixes_iter();
 		let field_body_size = self.options.field_body_size;
@@ -307,7 +314,9 @@ impl Database {
 	}
 
 	// TODO: refactor to avoid boxed iterator
-	pub fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
+	/// Returns an iterator over the database key-value pairs stored in the data file and collision
+	/// files.
+	fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
 		let collided_records = self.collisions.values()
 			.flat_map(|it| it.iter().ok()) // FIXME: swallowing errors here
 			.flat_map(|it| it);
@@ -361,7 +370,7 @@ impl Database {
 	}
 
 	/// Finds prefixes that have a number of collisions higher than the configured threshold and
-	/// moves them to a separate file.
+	/// moves all their data to a separate file (one file for each collided prefix).
 	pub fn compact(&mut self) -> Result<()> {
 		let collisions = self.collisions()?;
 
@@ -375,7 +384,7 @@ impl Database {
 				// FIXME: store a reference to the value in the return Map from collisions
 				let value = self.get(&key)?.expect("The key has been returned by the iterator; qed");
 				// FIXME: only need to copy the value if it isn't stored in a single field
-				collision_file.put(&key, &value.to_vec())?;
+				collision_file.insert(&key, &value.to_vec())?;
 			}
 
 			collision_files.push(collision_file);

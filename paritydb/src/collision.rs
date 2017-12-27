@@ -9,21 +9,20 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use error::Result;
 use transaction::Operation;
 
-/// A data file representing all the data for a given prefix. All the data for
-/// this prefix exists in this file because there was a high threshold of
-/// collisions.
+/// A data file representing all the data for a given prefix. All the data for this prefix exists in
+/// this file because there was a high threshold of collisions.
 ///
-/// The data file is a log file backed by an in-memory BTree. All mutable
-/// operations are appended to the log file, and the in-memory BTree maps the
-/// keys to their position in the log file.
+/// The data file is a log file backed by an in-memory BTree. All mutable operations are appended to
+/// the log file, and the in-memory BTree maps the keys to their position in the log file.
 ///
-/// Idea: grow the log file in chunks (instead of appending to a file) and mmap
-/// it. When compacting the log we rewrite it with the keys sorted (since we
-/// have the in-memory index), so iteration should be fast on compacted log
-/// files.
+/// When the collision file is opened it is traversed to build the in-memory index.
 ///
-/// Alternative: use exactly the same strategy as used for the data file but
-/// ignoring the first `n` bits of the prefix and adding extra bits as needed
+/// Idea: grow the log file in chunks (instead of appending to a file) and mmap it. When compacting
+/// the log we rewrite it with the keys sorted (since we have the in-memory index), so iteration
+/// should be fast on compacted log files.
+///
+/// Alternative: use exactly the same strategy as used for the data file but ignoring the first `n`
+/// bits of the prefix and adding extra bits as needed
 ///
 #[derive(Debug)]
 pub struct Collision {
@@ -68,6 +67,7 @@ impl Collision {
 		Ok(index)
 	}
 
+	/// Create a new collision file for the given prefix.
 	pub fn create<P: AsRef<Path>>(path: P, prefix: u32) -> Result<Collision> {
 		// Create directories if necessary.
 		fs::create_dir_all(&path)?;
@@ -83,6 +83,7 @@ impl Collision {
 		Ok(Collision { index, prefix, path, file })
 	}
 
+	/// Open collision file if it exists, returns `None` otherwise.
 	pub fn open<P: AsRef<Path>>(path: P, prefix: u32) -> Result<Option<Collision>> {
 		let path = Self::collision_file_path(path, prefix);
 		let open_options = fs::OpenOptions::new()
@@ -100,7 +101,8 @@ impl Collision {
 		Ok(Some(Collision { index, prefix, path, file }))
 	}
 
-	pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+	/// Inserts the given key-value pair into the collision file.
+	pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
 		let position = LogEntry::write(&mut self.file, key, value)?;
 		let size = LogEntry::len(&key, &value);
 
@@ -109,6 +111,7 @@ impl Collision {
 		Ok(())
 	}
 
+	/// Removes the given `key` from the collision file.
 	pub fn delete(&mut self, key: &[u8]) -> Result<()> {
 		if let Some(_) = self.index.remove(key) {
 			LogEntry::write_deleted(&mut self.file, key)?;
@@ -117,6 +120,7 @@ impl Collision {
 		Ok(())
 	}
 
+	/// Lookup a value associated with the given `key` in the collision file.
 	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
 		if let Some(entry) = self.index.get(key) {
 			// TODO: cache file descriptors if necessary
@@ -137,21 +141,21 @@ impl Collision {
 		}
 	}
 
+	/// Applies the given `Operation` by dispatching to the `insert` or `delete` methods.
 	pub fn apply(&mut self, op: Operation) -> Result<()> {
 		match op {
 			Operation::Delete(key) => self.delete(key),
-			Operation::Insert(key, value) => self.put(key, value),
+			Operation::Insert(key, value) => self.insert(key, value),
 		}
 	}
 
+	/// Return the `prefix` that this collision file refers to, i.e. all keys stored in this file
+	/// have this prefix.
 	pub fn prefix(&self) -> u32 {
 		self.prefix
 	}
 
-	pub fn compact(&mut self) -> Result<()> {
-		unimplemented!()
-	}
-
+	/// Returns an iterator over all key-value pairs in the collision file.
 	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator> {
 		CollisionLogIterator::new(&self.path, self.index.values())
 	}
@@ -286,7 +290,7 @@ mod tests {
 
 		{
 			let mut collision = Collision::create(temp.path(), 0).unwrap();
-			collision.put(b"hello", b"world").unwrap();
+			collision.insert(b"hello", b"world").unwrap();
 			assert_eq!(collision.get(b"hello").unwrap().unwrap(), b"world");
 		}
 
@@ -300,11 +304,11 @@ mod tests {
 
 		{
 			let mut collision = Collision::create(temp.path(), 0).unwrap();
-			collision.put(b"0", b"0").unwrap();
-			collision.put(b"2", b"2").unwrap();
-			collision.put(b"1", b"1").unwrap();
-			collision.put(b"4", b"4").unwrap();
-			collision.put(b"3", b"3").unwrap();
+			collision.insert(b"0", b"0").unwrap();
+			collision.insert(b"2", b"2").unwrap();
+			collision.insert(b"1", b"1").unwrap();
+			collision.insert(b"4", b"4").unwrap();
+			collision.insert(b"3", b"3").unwrap();
 			collision.delete(b"4").unwrap();
 		}
 

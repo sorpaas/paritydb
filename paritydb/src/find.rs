@@ -50,7 +50,6 @@ pub fn find_record<'a>(
 
 pub fn iter<'a>(
 	data: &'a [u8],
-	// TODO: rename to occupied_prefix_iter
 	occupied_prefixes_iter: OccupiedPrefixesIterator<'a>,
 	field_body_size: usize,
 	key_size: usize,

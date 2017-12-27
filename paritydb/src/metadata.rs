@@ -43,6 +43,9 @@ impl Metadata {
 		self.occupied_bytes += new_len as u64;
 	}
 
+	/// Notify that a given prefix was marked as collided.
+	///
+	/// The prefix is added to `collided_prefixes` and removed from `prefixes`.
 	pub fn add_prefix_collision(&mut self, prefix: u32) {
 		self.collided_prefixes.insert(prefix);
 		self.prefixes.remove(prefix);
