@@ -287,6 +287,34 @@ db_test!(
 	AssertEqual("fff", "003")
 );
 
+db_test!(
+	db_flush_bug,
+	Insert("aaa", "001"),
+	Insert("aab", "002"),
+	Insert("aac", "003"),
+	Insert("aad", "004"),
+	Insert("aae", "005"),
+	Insert("aaf", "006"),
+	Insert("zzz", "007"),
+	Insert("ddd", "008"),
+	CommitAndFlush,
+	Delete("aaa"),
+	Delete("aab"),
+	Delete("aac"),
+	Delete("aad"),
+	Delete("aae"),
+	Delete("aaf"),
+	CommitAndFlush,
+	AssertNone("aaa"),
+	AssertNone("aab"),
+	AssertNone("aac"),
+	AssertNone("aad"),
+	AssertNone("aae"),
+	AssertNone("aaf"),
+	AssertEqual("zzz", "007"),
+	AssertEqual("ddd", "008")
+);
+
 #[test]
 fn test_flush_recovery() {
 	let temp = TempDir::new("flush_recovery").unwrap();
