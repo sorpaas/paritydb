@@ -131,6 +131,10 @@ impl Collision {
 
 	/// Inserts the given key-value pair into the collision file.
 	pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+		if let Some(current_value) = self.get(key)? {
+			if current_value == value { return Ok(()); }
+		}
+
 		// FIXME: have write return the `LogSlice` to avoid re-reading the entry
 		let position = LogEntry::write(&mut self.file, key, value)?;
 		let size = LogEntry::len(&key, &value);
@@ -139,6 +143,8 @@ impl Collision {
 
 		let data = unsafe { &self.mmap.as_slice()[position as usize..] };
 		let (_, entry) = LogEntry::read(data);
+
+		assert!(key == entry.key);
 
 		self.index.insert(LogSlice::new(entry.key), IndexEntry { position, size });
 
