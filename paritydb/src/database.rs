@@ -691,6 +691,50 @@ mod tests {
 	}
 
 	#[test]
+	fn test_iter_collisions() {
+		let temp = tempdir::TempDir::new("test_iter_collisions").unwrap();
+
+		let mut db = Database::create(temp.path(), Options {
+			journal_eras: 0,
+			key_len: 3,
+			value_len: ValuesLen::Constant(3),
+			max_prefix_collisions: 3,
+			..Default::default()
+		}).unwrap();
+
+		let mut tx = db.create_transaction();
+
+		let data = vec![
+			("aaa", "001"),
+			("aab", "002"),
+			("aac", "003"),
+			("hhh", "004"),
+			("zzz", "005"),
+		];
+
+		for record in data.iter() {
+			let (k, v) = *record;
+			tx.insert(k, v).unwrap();
+		}
+
+		db.commit(&tx).unwrap();
+		db.flush_journal(1).unwrap();
+
+		assert_eq!(db.compact().unwrap(), vec![97]);
+
+		let records = db.iter().unwrap().map(|item| {
+			let (k, v) = item.unwrap();
+			(::std::str::from_utf8(&k).unwrap().to_string(),
+			 ::std::str::from_utf8(&v.to_vec()).unwrap().to_string())
+		});
+
+		assert_eq!(
+			records.collect::<Vec<_>>(),
+			data.iter().map(|x| (x.0.to_string(), x.1.to_string())).collect::<Vec<_>>()
+		);
+	}
+
+	#[test]
 	fn should_validate_exclusive_access() {
 		let temp = tempdir::TempDir::new("exclusive_access").unwrap();
 
