@@ -290,9 +290,24 @@ mod tests {
 		tree.remove(2);
 		tree.remove(4);
 		tree.remove(6);
-		assert_eq!(tree.bytes(), [0b01001000, 0b00010000, 0b0, 0b1]);
+		assert_eq!(tree.bytes(), [0b01001010, 0b00010000, 0b0, 0b1]);
 
 		tree.remove(8);
 		assert_eq!(tree.bytes(), [0; 4]);
+	}
+
+	#[test]
+	fn test_removing2() {
+		let prefix_bits = 2;
+		let data = vec![0; PrefixTree::leaf_data_len(prefix_bits)];
+		let mut tree = PrefixTree::from_leaves(&data, prefix_bits);
+
+		tree.insert(0);
+		tree.insert(2);
+		tree.remove(2);
+
+		assert_eq!(
+			tree.prefixes_iter().collect::<Vec<_>>(),
+			vec![0]);
 	}
 }
