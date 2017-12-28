@@ -199,7 +199,7 @@ impl Database {
 		let to_flush = cmp::min(len - self.options.external.journal_eras, max);
 
 		let prefix_bits = self.options.external.key_index_bits;
-		let ref mut collisions = self.collisions;
+		let collisions = &mut self.collisions;
 
 		for era in self.journal.drain_front(to_flush) {
 			{
@@ -261,7 +261,11 @@ impl Database {
 		let key = Key::new(key, self.options.external.key_index_bits);
 
 		// fetch from the collision file if this is a collided prefix
-		if let Some(collision) = self.collisions.get(&key.prefix) {
+		if self.metadata.collided_prefixes.has(key.prefix).unwrap_or(false) {
+			let collision = self.collisions.get(&key.prefix).expect(
+				"prefix is declared as collided; \
+				 collision file should exist in collisions index; qed");
+
 			return Ok(collision.get(key.key)?.map(Value::Raw))
 		}
 
@@ -280,7 +284,7 @@ impl Database {
 		}
 	}
 
-	/// Returns an iterator over all the database key-value pairs.
+	/// Returns an iterator over all the database key-value pairs ordered by key.
 	pub fn iter(&self) -> Result<DatabaseIterator> {
 		let record_collisions_iter = self.record_collisions_iter()?;
 		let journal_iter = self.journal.iter();
@@ -289,7 +293,8 @@ impl Database {
 		Ok(DatabaseIterator { record_collisions_iter, journal_iter, pending })
 	}
 
-	/// Returns an iterator over only the database key-value pairs stored in the data file.
+	/// Returns an iterator over only the database key-value pairs stored in the data file ordered
+	/// by key (i.e. it doesn't include data from the journal or collision files).
 	fn record_iter(&self) -> Result<RecordIterator> {
 		let data = unsafe { &self.mmap.as_slice() };
 		let occupied_prefixes_iter = self.metadata.prefixes.prefixes_iter();

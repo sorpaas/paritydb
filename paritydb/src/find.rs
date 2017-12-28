@@ -67,7 +67,7 @@ pub fn iter<'a>(
 		field_body_size,
 		field_size,
 		key_size,
-		value_size
+		value_size,
 	})
 }
 

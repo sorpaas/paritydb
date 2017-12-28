@@ -144,7 +144,8 @@ impl Collision {
 		let data = unsafe { &self.mmap.as_slice()[position as usize..] };
 		let (_, entry) = LogEntry::read(data);
 
-		assert!(key == entry.key);
+		assert!(key == entry.key,
+				"found incorrect key after insertion into log");
 
 		self.index.insert(LogSlice::new(entry.key), IndexEntry { position, size });
 
@@ -166,7 +167,8 @@ impl Collision {
 		if let Some(entry) = self.index.get(&LogSlice::new(key)) {
 			let data = unsafe { &self.mmap.as_slice()[entry.position as usize..] };
 			let (_, entry) = LogEntry::read(data);
-			assert!(entry.key == key);
+			assert!(key == entry.key,
+					"index pointed to log entry with different key");
 
 			Ok(Some(entry.value.expect("index only points to live entries; qed")))
 		} else {
@@ -188,7 +190,7 @@ impl Collision {
 		self.prefix
 	}
 
-	/// Returns an iterator over all key-value pairs in the collision file.
+	/// Returns an iterator over all key-value pairs in the collision file ordered by key.
 	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator> {
 		let data = unsafe { &self.mmap.as_slice() };
 

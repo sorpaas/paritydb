@@ -106,15 +106,12 @@ pub mod bytes {
 
 	#[inline]
 	pub fn collided_prefix_leaves_offset(prefix_bits: u8) -> usize {
-		Metadata::VERSION_SIZE + Metadata::OCCUPIED_SIZE + PrefixTree::leaf_data_len(prefix_bits)
+		prefix_leaves_offset() + PrefixTree::leaf_data_len(prefix_bits)
 	}
 
 	/// Returns expected `Metadata` bytes len given prefix bits.
 	pub fn len(prefix_bits: u8) -> usize {
-		Metadata::VERSION_SIZE +
-			Metadata::OCCUPIED_SIZE +
-			PrefixTree::leaf_data_len(prefix_bits) +
-			PrefixTree::leaf_data_len(prefix_bits)
+		collided_prefix_leaves_offset(prefix_bits) + PrefixTree::leaf_data_len(prefix_bits)
 	}
 
 	/// Read `Metadata` from given slice.
