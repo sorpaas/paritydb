@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{btree_set, BTreeMap};
 use std::collections::btree_map::Entry;
@@ -31,8 +30,6 @@ pub enum Value<'a> {
 	Raw(&'a [u8]),
 	/// DB record
 	Record(Record<'a>),
-	/// Owned data (collision file)
-	Owned(Vec<u8>),
 }
 
 impl<'a> Value<'a> {
@@ -46,7 +43,6 @@ impl<'a> Value<'a> {
 				record.read_value(&mut v);
 				v
 			},
-			Value::Owned(ref vec) => vec.clone(),
 		}
 	}
 }
@@ -56,7 +52,6 @@ impl<'a, T: AsRef<[u8]>> PartialEq<T> for Value<'a> {
 		match *self {
 			Value::Raw(slice) => slice == other.as_ref(),
 			Value::Record(ref record) => record.value_is_equal(other.as_ref()),
-			Value::Owned(ref vec) => *vec == other.as_ref(),
 		}
 	}
 }
@@ -267,7 +262,7 @@ impl Database {
 
 		// fetch from the collision file if this is a collided prefix
 		if let Some(collision) = self.collisions.get(&key.prefix) {
-			return Ok(collision.get(key.key)?.map(Value::Owned))
+			return Ok(collision.get(key.key)?.map(Value::Raw))
 		}
 
 		// check if there's any data stored on the data file for the given prefix
@@ -316,7 +311,7 @@ impl Database {
 	// TODO: refactor to avoid boxed iterator
 	/// Returns an iterator over the database key-value pairs stored in the data file and collision
 	/// files.
-	fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(Cow<[u8]>, Value<'a>)>> + 'a>> {
+	fn record_collisions_iter<'a>(&'a self) -> Result<Box<Iterator<Item=Result<(&'a [u8], Value<'a>)>> + 'a>> {
 		let collided_records = self.collisions.values()
 			.flat_map(|it| it.iter().ok()) // FIXME: swallowing errors here
 			.flat_map(|it| it);
@@ -333,8 +328,8 @@ impl Database {
 			match either {
 				EitherOrBoth::Left(Err(err)) => Err(err.into()),
 				EitherOrBoth::Right(Err(err)) => Err(err),
-				EitherOrBoth::Left(Ok(r)) => Ok((Cow::Borrowed(r.key()), Value::Record(r))),
-				EitherOrBoth::Right(Ok(c)) => Ok((Cow::Owned(c.0), Value::Owned(c.1))),
+				EitherOrBoth::Left(Ok(r)) => Ok((r.key(), Value::Record(r))),
+				EitherOrBoth::Right(Ok(c)) => Ok((c.0, Value::Raw(c.1))),
 				EitherOrBoth::Both(_, _) =>
 					unreachable!("value exists in collision file; \
 								  so cannot exist in data file; qed"),
@@ -442,7 +437,7 @@ impl Drop for Database {
 enum IteratorValue<'a> {
 	None,
 	Journal(Operation<'a>),
-	DB((Cow<'a, [u8]>, Value<'a>)),
+	DB((&'a [u8], Value<'a>)),
 }
 
 impl<'a> IteratorValue<'a> {
@@ -453,12 +448,12 @@ impl<'a> IteratorValue<'a> {
 
 pub struct DatabaseIterator<'a> {
 	journal_iter: btree_set::IntoIter<Operation<'a>>,
-	record_collisions_iter: Box<Iterator<Item=Result<(Cow<'a, [u8]>, Value<'a>)>> + 'a>,
+	record_collisions_iter: Box<Iterator<Item=Result<(&'a [u8], Value<'a>)>> + 'a>,
 	pending: IteratorValue<'a>,
 }
 
 impl<'a> Iterator for DatabaseIterator<'a> {
-	type Item = Result<(Cow<'a, [u8]>, Value<'a>)>;
+	type Item = Result<(&'a [u8], Value<'a>)>;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
@@ -497,13 +492,13 @@ impl<'a> Iterator for DatabaseIterator<'a> {
 
 			#[inline]
 			// returns `None` if the operation is a `Delete` and we should skip to the next value
-			fn handle_journal_operation<'a>(o: Operation<'a>) -> Option<Result<(Cow<'a, [u8]>, Value<'a>)>> {
+			fn handle_journal_operation<'a>(o: Operation<'a>) -> Option<Result<(&'a [u8], Value<'a>)>> {
 				match o {
 					Operation::Delete(_) => {
 						None
 					},
 					Operation::Insert(key, value) => {
-						Some(Ok((Cow::Borrowed(key), Value::Raw(value))))
+						Some(Ok((key, Value::Raw(value))))
 					},
 				}
 			}

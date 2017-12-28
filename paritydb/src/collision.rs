@@ -1,10 +1,13 @@
+use std::cmp::Ordering;
 use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::slice;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use memmap::{Mmap, Protection};
 
 use error::Result;
 use transaction::Operation;
@@ -26,9 +29,10 @@ use transaction::Operation;
 ///
 #[derive(Debug)]
 pub struct Collision {
-	index: BTreeMap<Vec<u8>, IndexEntry>,
+	index: BTreeMap<LogSlice, IndexEntry>,
 	prefix: u32,
 	path: PathBuf,
+	mmap: Mmap,
 	file: File,
 }
 
@@ -45,21 +49,23 @@ impl Collision {
 		path.as_ref().join(collision_file_name)
 	}
 
-	fn build_index<P: AsRef<Path>>(path: P) -> Result<BTreeMap<Vec<u8>, IndexEntry>> {
-		let log = LogIterator::new(path)?;
+	fn build_index(data: &[u8]) -> Result<BTreeMap<LogSlice, IndexEntry>> {
+		let log = LogIterator::new(data);
 
 		let mut index = BTreeMap::new();
-		for entry in log {
-			let entry = entry?;
-			let position = entry.position;
 
+		for (position, entry) in log {
 			match entry.value {
 				Some(value) => {
+					let position = position as u64;
 					let size = LogEntry::len(&entry.key, &value);
-					index.insert(entry.key, IndexEntry { position, size });
+
+					index.insert(
+						LogSlice::new(entry.key),
+						IndexEntry { position, size });
 				},
 				None => {
-					index.remove(&entry.key);
+					index.remove(&LogSlice::new(entry.key));
 				},
 			}
 		}
@@ -73,14 +79,19 @@ impl Collision {
 		fs::create_dir_all(&path)?;
 
 		let path = Self::collision_file_path(path, prefix);
-		let file = fs::OpenOptions::new()
-			.append(true)
+		let mut file = fs::OpenOptions::new()
+			.write(true)
 			.create_new(true)
 			.open(&path)?;
 
+		// TODO: grow file in chunks to avoid rebuilding index on every mutable operation
+		file.set_len(1)?;
+		file.flush()?;
+		let mmap = Mmap::open_path(&path, Protection::Read)?;
+
 		let index = BTreeMap::new();
 
-		Ok(Collision { index, prefix, path, file })
+		Ok(Collision { index, prefix, path, mmap, file })
 	}
 
 	/// Open collision file if it exists, returns `None` otherwise.
@@ -96,43 +107,59 @@ impl Collision {
 			Err(err) => return Err(err.into()),
 		};
 
-		let index = Collision::build_index(&path)?;
+		let mmap = Mmap::open_path(&path, Protection::Read)?;
+		let index = {
+			let data = unsafe { &mmap.as_slice() };
+			Collision::build_index(data)?
+		};
 
-		Ok(Some(Collision { index, prefix, path, file }))
+		Ok(Some(Collision { index, prefix, path, mmap, file }))
+	}
+
+	fn rebuild_index(&mut self) -> Result<()> {
+		let mmap = Mmap::open_path(&self.path, Protection::Read)?;
+		let index = {
+			let data = unsafe { &mmap.as_slice() };
+			Collision::build_index(data)?
+		};
+
+		self.mmap = mmap;
+		self.index = index;
+
+		Ok(())
 	}
 
 	/// Inserts the given key-value pair into the collision file.
 	pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+		// FIXME: have write return the `LogSlice` to avoid re-reading the entry
 		let position = LogEntry::write(&mut self.file, key, value)?;
 		let size = LogEntry::len(&key, &value);
 
-		self.index.insert(key.to_vec(), IndexEntry { position, size });
+		self.rebuild_index()?;
+
+		let data = unsafe { &self.mmap.as_slice()[position as usize..] };
+		let (_, entry) = LogEntry::read(data);
+
+		self.index.insert(LogSlice::new(entry.key), IndexEntry { position, size });
 
 		Ok(())
 	}
 
 	/// Removes the given `key` from the collision file.
 	pub fn delete(&mut self, key: &[u8]) -> Result<()> {
-		if let Some(_) = self.index.remove(key) {
+		if let Some(_) = self.index.remove(&LogSlice::new(key)) {
 			LogEntry::write_deleted(&mut self.file, key)?;
+			self.rebuild_index()?;
 		}
 
 		Ok(())
 	}
 
 	/// Lookup a value associated with the given `key` in the collision file.
-	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-		if let Some(entry) = self.index.get(key) {
-			// TODO: cache file descriptors if necessary
-			let file = fs::OpenOptions::new()
-				.read(true)
-				.open(&self.path)?;
-
-			let mut file = BufReader::new(file);
-			file.seek(SeekFrom::Start(entry.position))?;
-
-			let entry = LogEntry::read(&mut file)?;
-
+	pub fn get(&self, key: &[u8]) -> Result<Option<&[u8]>> {
+		if let Some(entry) = self.index.get(&LogSlice::new(key)) {
+			let data = unsafe { &self.mmap.as_slice()[entry.position as usize..] };
+			let (_, entry) = LogEntry::read(data);
 			assert!(entry.key == key);
 
 			Ok(Some(entry.value.expect("index only points to live entries; qed")))
@@ -157,36 +184,35 @@ impl Collision {
 
 	/// Returns an iterator over all key-value pairs in the collision file.
 	pub fn iter<'a>(&'a self) -> Result<CollisionLogIterator> {
-		CollisionLogIterator::new(&self.path, self.index.values())
+		let data = unsafe { &self.mmap.as_slice() };
+
+		CollisionLogIterator::new(data, self.index.values())
 	}
 }
 
 pub struct CollisionLogIterator<'a> {
-	index_iter: btree_map::Values<'a, Vec<u8>, IndexEntry>,
-	file: BufReader<File>,
+	data: &'a [u8],
+	index_iter: btree_map::Values<'a, LogSlice, IndexEntry>,
 }
 
 impl<'a> CollisionLogIterator<'a> {
-	fn new<P: AsRef<Path>>(path: P, index_iter: btree_map::Values<'a, Vec<u8>, IndexEntry>)
-						   -> Result<CollisionLogIterator<'a>> {
-		let file = fs::OpenOptions::new()
-			.read(true)
-			.open(&path)?;
-
-		let file = BufReader::new(file);
-
-		Ok(CollisionLogIterator { index_iter, file })
+	fn new(
+		data: &'a [u8],
+		index_iter: btree_map::Values<'a, LogSlice, IndexEntry>,
+	) -> Result<CollisionLogIterator<'a>> {
+		Ok(CollisionLogIterator { data, index_iter })
 	}
 }
 
 impl<'a> Iterator for CollisionLogIterator<'a> {
-	type Item = Result<(Vec<u8>, Vec<u8>)>;
+	type Item = Result<(&'a [u8], &'a [u8])>;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		self.index_iter.next().and_then(|entry| {
-			let mut read_next = || {
-				self.file.seek(SeekFrom::Start(entry.position))?;
-				let entry = LogEntry::read(&mut self.file)?;
+			let read_next = || {
+				let data = &self.data[entry.position as usize..];
+				let (_, entry) = LogEntry::read(data);
+
 				Ok((entry.key,
 					entry.value.expect("index only points to live entries; qed")))
 			};
@@ -199,17 +225,60 @@ impl<'a> Iterator for CollisionLogIterator<'a> {
 	}
 }
 
-
 #[derive(Debug)]
-struct LogEntry {
-	position: u64,
-	key: Vec<u8>,
-	value: Option<Vec<u8>>,
+struct LogEntry<'a> {
+	key: &'a [u8],
+	value: Option<&'a [u8]>,
 }
 
-impl LogEntry {
+/// Unsafe view onto memmap file memory which backs collision log file.
+#[derive(Debug)]
+struct LogSlice {
+	data: *const u8,
+	len: usize,
+}
+
+impl Ord for LogSlice {
+    fn cmp(&self, other: &Self) -> Ordering {
+		unsafe {
+			self.as_slice().cmp(other.as_slice())
+		}
+	}
+}
+
+impl PartialOrd for LogSlice {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for LogSlice {
+	fn eq(&self, other: &Self) -> bool {
+		unsafe {
+			self.as_slice().eq(other.as_slice())
+		}
+	}
+}
+
+impl Eq for LogSlice {}
+
+impl LogSlice {
+	fn new(data: &[u8]) -> LogSlice {
+		LogSlice {
+			data: data.as_ptr(),
+			len: data.len(),
+		}
+	}
+
+	unsafe fn as_slice<'a>(&self) -> &'a [u8] {
+		slice::from_raw_parts(self.data, self.len)
+	}
+}
+
+impl<'a> LogEntry<'a> {
 	const ENTRY_STATIC_SIZE: usize = 8; // key_size(4) + value_size(4)
 	const ENTRY_TOMBSTONE: u32 = !0; // used as value_size to represent a deleted entry
+	// FIXME: validate max value size
 
 	fn write_deleted<W: Write + Seek>(writer: &mut W, key: &[u8]) -> Result<u64> {
 		let position = writer.seek(SeekFrom::Current(0))?;
@@ -228,23 +297,30 @@ impl LogEntry {
 		Ok(position)
 	}
 
-	fn read<R: Read + Seek>(reader: &mut R) -> io::Result<LogEntry> {
-		let position = reader.seek(SeekFrom::Current(0))?;
-		let key_size = reader.read_u32::<LittleEndian>()?;
-		let mut key = vec![0u8; key_size as usize];
-		reader.read_exact(&mut key)?;
-		let value_size = reader.read_u32::<LittleEndian>()?;
+	// FIXME: should return Result
+	fn read(data: &[u8]) -> (usize, LogEntry) {
+		// FIXME: add sanity limits for key_size and value_size
+		//        this is to avoid issues if the file gets corruped
+		let mut offset = 4;
+		let key_size = LittleEndian::read_u32(&data[..offset]) as usize;
+
+		let key = &data[offset..offset + key_size];
+		offset += key_size;
+
+		let value_size = LittleEndian::read_u32(&data[offset..]) as usize;
+		offset += 4;
 
 		let value =
-			if value_size == LogEntry::ENTRY_TOMBSTONE {
+			if value_size == LogEntry::ENTRY_TOMBSTONE as usize {
 				None
 			} else {
-				let mut value = vec![0u8; value_size as usize];
-				reader.read_exact(&mut value)?;
-				Some(value)
+				let v = Some(&data[offset..offset + value_size]);
+				offset += value_size;
+				v
 			};
 
-		Ok(LogEntry { position, key, value })
+
+		(offset, LogEntry { key, value })
 	}
 
 	fn len(key: &[u8], value: &[u8]) -> usize {
@@ -252,28 +328,30 @@ impl LogEntry {
 	}
 }
 
-struct LogIterator {
-	file: BufReader<File>,
+struct LogIterator<'a> {
+	data: &'a [u8],
+	position: usize,
 }
 
-impl LogIterator {
-	fn new<P: AsRef<Path>>(path: P) -> Result<LogIterator> {
-		let file = fs::OpenOptions::new()
-			.read(true)
-			.open(&path)?;
-
-		Ok(LogIterator { file: BufReader::new(file) })
+impl<'a> LogIterator<'a> {
+	fn new(data: &[u8]) -> LogIterator {
+		let position = 0;
+		LogIterator { data, position }
 	}
 }
 
-impl Iterator for LogIterator {
-	type Item = Result<LogEntry>;
+impl<'a> Iterator for LogIterator<'a> {
+	type Item = (usize, LogEntry<'a>);
 
-	fn next(&mut self) -> Option<Result<LogEntry>> {
-		match LogEntry::read(&mut self.file) {
-			Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => None,
-			Err(err) => Some(Err(err.into())),
-			Ok(res) => Some(Ok(res)),
+	fn next(&mut self) -> Option<(usize, LogEntry<'a>)> {
+		if self.position >= self.data.len() { None }
+		else {
+			let (read, entry) = LogEntry::read(&self.data[self.position..]);
+			let position = self.position;
+
+			self.position += read;
+
+			Some((position, entry))
 		}
 	}
 }
@@ -294,7 +372,7 @@ mod tests {
 			assert_eq!(collision.get(b"hello").unwrap().unwrap(), b"world");
 		}
 
-		let mut collision = Collision::open(temp.path(), 0).unwrap().unwrap();
+		let collision = Collision::open(temp.path(), 0).unwrap().unwrap();
 		assert_eq!(collision.get(b"hello").unwrap().unwrap(), b"world");
 	}
 
@@ -312,11 +390,11 @@ mod tests {
 			collision.delete(b"4").unwrap();
 		}
 
-		let mut collision = Collision::open(temp.path(), 0).unwrap().unwrap();
+		let collision = Collision::open(temp.path(), 0).unwrap().unwrap();
 		let collision: Vec<_> = collision.iter().unwrap().flat_map(|entry| entry.ok()).collect();
 
-		let expected = vec![(b"0", b"0"), (b"1", b"1"), (b"2", b"2"), (b"3", b"3")];
-		let expected: Vec<_> = expected.iter().map(|e| (e.0.to_vec(), e.1.to_vec())).collect();
+		let expected: Vec<(&[u8], &[u8])> =
+			vec![(b"0", b"0"), (b"1", b"1"), (b"2", b"2"), (b"3", b"3")];
 
 		assert_eq!(collision, expected);
 	}
