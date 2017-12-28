@@ -76,13 +76,14 @@ impl PrefixTree {
 		let mut idx = Self::leaf_index(prefix, self.prefix_bits);
 		self.tree.set(idx, false);
 
-		let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-		let sibling_set = self.tree.get(sibling_idx).unwrap_or(false);
-		if !sibling_set {
-			while idx > 1 {
-				idx = idx >> 1;
-				self.tree.set(idx, false);
-			}
+		loop {
+			if idx <= 1 { break; };
+			let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+			let sibling_set = self.tree.get(sibling_idx).unwrap_or(false);
+			if sibling_set { break; };
+
+			idx = idx >> 1;
+			self.tree.set(idx, false);
 		}
 	}
 
