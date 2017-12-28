@@ -24,7 +24,7 @@ script:
 
   # only run benches on PRs and when testing "nightly"
   - if [ "${TRAVIS_PULL_REQUEST_BRANCH:-$TRAVIS_BRANCH}" == "master" ] || [ "$TRAVIS_RUST_VERSION" != "nightly" ]; then
-      exit 0;
+      exit $?;
     fi
 
   # bench our branch
