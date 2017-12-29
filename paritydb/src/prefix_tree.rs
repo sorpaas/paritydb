@@ -76,13 +76,14 @@ impl PrefixTree {
 		let mut idx = Self::leaf_index(prefix, self.prefix_bits);
 		self.tree.set(idx, false);
 
-		let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-		let sibling_set = self.tree.get(sibling_idx).unwrap_or(false);
-		if !sibling_set {
-			while idx > 1 {
-				idx = idx >> 1;
-				self.tree.set(idx, false);
-			}
+		loop {
+			if idx <= 1 { break; };
+			let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+			let sibling_set = self.tree.get(sibling_idx).unwrap_or(false);
+			if sibling_set { break; };
+
+			idx = idx >> 1;
+			self.tree.set(idx, false);
 		}
 	}
 
@@ -290,9 +291,24 @@ mod tests {
 		tree.remove(2);
 		tree.remove(4);
 		tree.remove(6);
-		assert_eq!(tree.bytes(), [0b01001000, 0b00010000, 0b0, 0b1]);
+		assert_eq!(tree.bytes(), [0b01001010, 0b00010000, 0b0, 0b1]);
 
 		tree.remove(8);
 		assert_eq!(tree.bytes(), [0; 4]);
+	}
+
+	#[test]
+	fn test_removing2() {
+		let prefix_bits = 2;
+		let data = vec![0; PrefixTree::leaf_data_len(prefix_bits)];
+		let mut tree = PrefixTree::from_leaves(&data, prefix_bits);
+
+		tree.insert(0);
+		tree.insert(2);
+		tree.remove(2);
+
+		assert_eq!(
+			tree.prefixes_iter().collect::<Vec<_>>(),
+			vec![0]);
 	}
 }
