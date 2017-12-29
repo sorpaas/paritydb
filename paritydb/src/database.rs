@@ -378,6 +378,7 @@ impl Database {
 		let mut collided_prefixes = Vec::new();
 		let mut collision_files = Vec::new();
 
+		// create collision files and insert data from collided prefixes
 		for (prefix, keys) in collisions.iter() {
 			let mut collision_file = Collision::create(&self.path, *prefix)?;
 
@@ -392,35 +393,32 @@ impl Database {
 			collided_prefixes.push(*prefix);
 		}
 
+		// update metadata with collided prefixes but don't persist it
+		for prefix in collided_prefixes.iter() {
+			self.metadata.add_prefix_collision(*prefix);
+		}
+
+		// prepare flush to delete colliding keys
 		let deletions = collisions.values().flat_map(|ks| ks).map(|k| Operation::Delete(k));
 
-		// delete colliding keys
-		{
-			let flush = Flush::new(
-				&self.path,
-				&self.options,
-				unsafe { self.mmap.as_slice() },
-				&self.metadata,
-				deletions)?;
+		let flush = Flush::new(
+			&self.path,
+			&self.options,
+			unsafe { self.mmap.as_slice() },
+			&self.metadata,
+			deletions)?;
 
-			flush.flush(unsafe { self.mmap.as_mut_slice() }, unsafe { self.metadata_mmap.as_mut_slice() }, &mut self.metadata);
-			self.mmap.flush()?;
-			flush.delete()?;
-		}
+		// persist metadata
+		// if we crash after this the flush will be applied on restart and the metadata will
+		// already be properly updated
+		self.metadata.as_bytes().copy_to_slice(unsafe { self.metadata_mmap.as_mut_slice() });
+		self.metadata_mmap.flush()?;
 
-		// update metadata
-		{
-			for prefix in collided_prefixes.iter() {
-				self.metadata.add_prefix_collision(*prefix);
-			}
-
-			{
-				let raw_metadata = unsafe { self.metadata_mmap.as_mut_slice() };
-				self.metadata.as_bytes().copy_to_slice(raw_metadata);
-			}
-
-			self.metadata_mmap.flush()?;
-		}
+		// perform the flush and update metadata
+		flush.flush(unsafe { self.mmap.as_mut_slice() }, unsafe { self.metadata_mmap.as_mut_slice() }, &mut self.metadata);
+		self.mmap.flush()?;
+		self.metadata_mmap.flush()?;
+		flush.delete()?;
 
 		// update collisions index
 		for collision_file in collision_files {
