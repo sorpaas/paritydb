@@ -202,15 +202,17 @@ impl Database {
 		let collisions = &mut self.collisions;
 
 		for era in self.journal.drain_front(to_flush) {
-			{
+			let flush = {
+				let collided_prefixes = &self.metadata.collided_prefixes;
+
 				// partition operations by whether they affect collided prefixes
 				let (collided_operations, operations): (Vec<_>, Vec<_>) =
 					era.iter().partition(|op| {
 						let key = Key::new(op.key(), prefix_bits);
-						collisions.contains_key(&key.prefix)
+						collided_prefixes.has(key.prefix).unwrap_or(false)
 					});
 
-				// flush operations for collided prefixes to their own prefix file
+				// flush operations for collided prefixes to their own collision file
 				for op in collided_operations {
 					let key = Key::new(op.key(), prefix_bits);
 					let collision = collisions.get_mut(&key.prefix).expect(
@@ -220,24 +222,25 @@ impl Database {
 					collision.apply(op)?;
 				}
 
-				// flush everything else to the data file
-				let flush = Flush::new(
+				// create flush to data file for everything else
+				Flush::new(
 					&self.path,
 					&self.options,
 					unsafe { self.mmap.as_slice() },
 					&self.metadata,
 					operations.into_iter(),
-				)?;
-				// TODO: metadata should be a single structure
-				// updating self.metadata should happen after all calls
-				// which may fail ("?")
-				flush.flush(unsafe { self.mmap.as_mut_slice() }, unsafe { self.metadata_mmap.as_mut_slice() }, &mut self.metadata);
-				self.mmap.flush()?;
-				self.metadata_mmap.flush()?;
-				flush.delete()?;
-			}
+				)?
+			};
 
 			era.delete()?;
+
+			// TODO: metadata should be a single structure
+			// updating self.metadata should happen after all calls
+			// which may fail ("?")
+			flush.flush(unsafe { self.mmap.as_mut_slice() }, unsafe { self.metadata_mmap.as_mut_slice() }, &mut self.metadata);
+			self.mmap.flush()?;
+			self.metadata_mmap.flush()?;
+			flush.delete()?;
 		}
 
 		Ok(())
