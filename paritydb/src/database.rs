@@ -409,7 +409,7 @@ impl Database {
 				metadata.add_prefix_collision(*prefix);
 			}
 
-			// create flush to delete colliding keys but don't apply it
+			// prepare flush to delete colliding keys but don't apply it
 			let deletions = collisions.values().flat_map(|ks| ks).map(|k| Operation::Delete(k));
 
 			let flush = Flush::new(

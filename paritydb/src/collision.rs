@@ -55,18 +55,16 @@ impl Collision {
 		let mut index = BTreeMap::new();
 
 		for (position, entry) in log {
-			match entry.value {
-				Some(value) => {
-					let position = position as u64;
-					let size = LogEntry::len(&entry.key, &value);
+			if let Some(value) = entry.value {
+				let position = position as u64;
+				let size = LogEntry::len(&entry.key, &value);
 
-					index.insert(
-						LogSlice::new(entry.key),
-						IndexEntry { position, size });
-				},
-				None => {
-					index.remove(&LogSlice::new(entry.key));
-				},
+				index.insert(
+					LogSlice::new(entry.key),
+					IndexEntry { position, size });
+
+			} else {
+				index.remove(&LogSlice::new(entry.key));
 			}
 		}
 
