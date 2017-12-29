@@ -345,9 +345,8 @@ impl Database {
 		})))
 	}
 
-	fn collisions(&self) -> Result<BTreeMap<u32, Vec<Vec<u8>>>> {
-		// FIXME: this is currently copying keys
-		let mut collisions: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
+	fn collisions(&self) -> Result<BTreeMap<u32, Vec<&[u8]>>> {
+		let mut collisions: BTreeMap<u32, Vec<&[u8]>> = BTreeMap::new();
 
 		for record in self.record_iter()? {
 			let key = record?.key();
@@ -355,16 +354,16 @@ impl Database {
 			let prefix = Key::new(key, self.options.external.key_index_bits).prefix;
 			match collisions.entry(prefix) {
 				Entry::Vacant(entry) => {
-					entry.insert(vec![key.to_vec()]);
+					entry.insert(vec![key]);
 				},
 				Entry::Occupied(mut entry) => {
-					entry.get_mut().push(key.to_vec());
+					entry.get_mut().push(key);
 				},
 			}
 		}
 
 		// drop prefixes that have a number of collisions lower than the allowed threshold
-		let collisions: BTreeMap<u32, Vec<Vec<u8>>> =
+		let collisions: BTreeMap<u32, Vec<&[u8]>> =
 			collisions.into_iter().filter(|p| {
 				p.1.len() >= self.options.external.max_prefix_collisions
 			}).collect();
@@ -376,45 +375,50 @@ impl Database {
 	/// moves all their data to a separate file (one file for each collided prefix). Returns a
 	/// vector of collided prefixes (empty if no collisions have been found).
 	pub fn compact(&mut self) -> Result<Vec<u32>> {
-		let collisions = self.collisions()?;
-
-		let mut collided_prefixes = Vec::new();
 		let mut collision_files = Vec::new();
+		let mut collided_prefixes = Vec::new();
 
-		// create collision files and insert data from collided prefixes
-		for (prefix, keys) in collisions.iter() {
-			let mut collision_file = Collision::create(&self.path, *prefix)?;
+		let (metadata, flush) = {
+			let collisions = self.collisions()?;
 
-			for key in keys {
-				// FIXME: store a reference to the value in the return Map from collisions
-				let value = self.get(&key)?.expect("The key has been returned by the iterator; qed");
-				// FIXME: only need to copy the value if it isn't stored in a single field
-				collision_file.insert(&key, &value.to_vec())?;
+			// create collision files and insert data from collided prefixes
+			for (prefix, keys) in collisions.iter() {
+				let mut collision_file = Collision::create(&self.path, *prefix)?;
+
+				for key in keys {
+					// FIXME: store a reference to the value in the return Map from collisions
+					let value = self.get(&key)?.expect("The key has been returned by the iterator; qed");
+					// FIXME: only need to copy the value if it isn't stored in a single field
+					collision_file.insert(&key, &value.to_vec())?;
+				}
+
+				collision_files.push(collision_file);
+				collided_prefixes.push(*prefix);
 			}
 
-			collision_files.push(collision_file);
-			collided_prefixes.push(*prefix);
-		}
+			// clone metadata and update it with collided prefixes but don't persist it
+			let mut metadata = self.metadata.clone();
+			for prefix in collided_prefixes.iter() {
+				metadata.add_prefix_collision(*prefix);
+			}
 
-		// update metadata with collided prefixes but don't persist it
-		for prefix in collided_prefixes.iter() {
-			self.metadata.add_prefix_collision(*prefix);
-		}
+			// create flush to delete colliding keys but don't apply it
+			let deletions = collisions.values().flat_map(|ks| ks).map(|k| Operation::Delete(k));
 
-		// prepare flush to delete colliding keys
-		let deletions = collisions.values().flat_map(|ks| ks).map(|k| Operation::Delete(k));
+			let flush = Flush::new(
+				&self.path,
+				&self.options,
+				unsafe { self.mmap.as_slice() },
+				&metadata,
+				deletions)?;
 
-		let flush = Flush::new(
-			&self.path,
-			&self.options,
-			unsafe { self.mmap.as_slice() },
-			&self.metadata,
-			deletions)?;
+			(metadata, flush)
+		};
 
-		// persist metadata
+		// persist metadata updated with collided prefixes
 		// if we crash after this the flush will be applied on restart and the metadata will
 		// already be properly updated
-		self.metadata.as_bytes().copy_to_slice(unsafe { self.metadata_mmap.as_mut_slice() });
+		metadata.as_bytes().copy_to_slice(unsafe { self.metadata_mmap.as_mut_slice() });
 		self.metadata_mmap.flush()?;
 
 		// perform the flush and update metadata
@@ -426,7 +430,7 @@ impl Database {
 		// update collisions index
 		for collision_file in collision_files {
 			let prev = self.collisions.insert(collision_file.prefix(), collision_file);
-			assert!(prev.is_none())
+			assert!(prev.is_none());
 		}
 
 		Ok(collided_prefixes)
