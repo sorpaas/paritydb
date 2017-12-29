@@ -45,6 +45,14 @@ impl<'a> Value<'a> {
 			},
 		}
 	}
+
+	/// Returns value if it is a continuous slice of memory, otherwise returns None.
+	pub fn as_slice(&self) -> Option<&[u8]> {
+		match *self {
+			Value::Raw(ref slice) => Some(slice),
+			Value::Record(ref record) => record.value_raw_slice(),
+		}
+	}
 }
 
 impl<'a, T: AsRef<[u8]>> PartialEq<T> for Value<'a> {
@@ -388,8 +396,7 @@ impl Database {
 				for key in keys {
 					// FIXME: store a reference to the value in the return Map from collisions
 					let value = self.get(&key)?.expect("The key has been returned by the iterator; qed");
-					// FIXME: only need to copy the value if it isn't stored in a single field
-					collision_file.insert(&key, &value.to_vec())?;
+					collision_file.insert(&key, value.as_slice().unwrap_or(&value.to_vec()))?;
 				}
 
 				collision_files.push(collision_file);
