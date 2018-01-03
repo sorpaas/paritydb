@@ -10,6 +10,7 @@ enum Action {
 	Insert(&'static str, &'static str),
 	Delete(&'static str),
 	CommitAndFlush,
+	AssertCompact(&'static [u32]),
 	AssertEqual(&'static str, &'static str),
 	AssertNone(&'static str),
 }
@@ -32,6 +33,9 @@ fn run_actions(db: &mut Database, actions: &[Action]) {
 				db.commit(&tx).unwrap();
 				tx = db.create_transaction();
 				db.flush_journal(1).unwrap();
+			},
+			AssertCompact(expected_prefixes) => {
+				assert_eq!(db.compact().unwrap(), expected_prefixes)
 			},
 			AssertEqual(key, expected_value) => {
 				assert_eq!(db.get(key).unwrap().unwrap(), expected_value);
@@ -285,6 +289,78 @@ db_test!(
 	AssertNone("ccc"),
 	AssertNone("ddd"),
 	AssertEqual("fff", "003")
+);
+
+db_test!(
+	db_compact,
+	Insert("aaa", "001"),
+	Insert("aab", "002"),
+	Insert("aac", "003"),
+	Insert("aad", "004"),
+	Insert("aae", "005"),
+	Insert("aaf", "006"),
+	Insert("zzz", "007"),
+	Insert("ggg", "008"),
+	CommitAndFlush,
+	AssertCompact(&[97]),
+	AssertEqual("aaa", "001"),
+	AssertEqual("aab", "002"),
+	AssertEqual("aac", "003"),
+	AssertEqual("aad", "004"),
+	AssertEqual("aae", "005"),
+	AssertEqual("aaf", "006"),
+	AssertEqual("zzz", "007"),
+	AssertEqual("ggg", "008"),
+	Insert("aaa", "000"),
+	Insert("aag", "006"),
+	CommitAndFlush,
+	AssertCompact(&[]),
+	AssertEqual("aaa", "000"),
+	AssertEqual("aag", "006")
+);
+
+db_test!(
+	db_compact_multiple,
+	Insert("aaa", "001"),
+	Insert("aab", "002"),
+	Insert("aac", "003"),
+	Insert("aad", "004"),
+	Insert("aae", "005"),
+	Insert("aaf", "006"),
+	Insert("jaa", "007"),
+	Insert("jab", "008"),
+	Insert("jac", "009"),
+	Insert("jad", "010"),
+	Insert("jae", "011"),
+	Insert("jaf", "012"),
+	Insert("zzz", "013"),
+	Insert("ggg", "014"),
+	CommitAndFlush,
+	AssertCompact(&[97, 106]),
+	AssertEqual("aaa", "001"),
+	AssertEqual("aab", "002"),
+	AssertEqual("aac", "003"),
+	AssertEqual("aad", "004"),
+	AssertEqual("aae", "005"),
+	AssertEqual("aaf", "006"),
+	AssertEqual("jaa", "007"),
+	AssertEqual("jab", "008"),
+	AssertEqual("jac", "009"),
+	AssertEqual("jad", "010"),
+	AssertEqual("jae", "011"),
+	AssertEqual("jaf", "012"),
+	AssertEqual("zzz", "013"),
+	AssertEqual("ggg", "014"),
+	Insert("aaa", "000"),
+	Insert("jaa", "000"),
+	Insert("aag", "015"),
+	Insert("jag", "016"),
+	CommitAndFlush,
+	AssertCompact(&[]),
+	AssertEqual("aaa", "000"),
+	AssertEqual("jaa", "000"),
+	AssertEqual("aag", "015"),
+	AssertEqual("jag", "016")
 );
 
 #[test]

@@ -58,6 +58,7 @@ extern crate byteorder;
 extern crate error_chain;
 extern crate fs2;
 extern crate hex_slice;
+extern crate itertools;
 extern crate memmap;
 extern crate parking_lot;
 extern crate tiny_keccak;
@@ -68,6 +69,7 @@ extern crate matches;
 #[macro_use]
 extern crate quickcheck;
 
+mod collision;
 mod database;
 mod error;
 mod field;
