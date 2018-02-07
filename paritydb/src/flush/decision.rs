@@ -77,6 +77,7 @@ pub fn is_min_offset_for_key(offset: usize, shift: isize, key: &[u8], prefix_bit
 
 #[inline]
 pub fn is_min_offset_for_space(offset: usize, shift: isize, data: &[u8], prefix_bits: u8, field_body_size: usize) -> bool {
+	assert!(shift < 0, "calling this function makes sense only if shift is negative");
 	let offset = offset - (-shift) as usize;
 	let min_offset = min_offset_for_space(data, prefix_bits, field_body_size);
 	min_offset <= offset
