@@ -71,18 +71,32 @@ fn compare_space_and_operation(space: &[u8], key: &[u8], field_body_size: usize)
 pub fn is_min_offset_for_key(offset: usize, shift: isize, key: &[u8], prefix_bits: u8, field_body_size: usize) -> bool {
 	assert!(shift < 0, "calling this function makes sense only if shift is negative");
 	let offset = offset - (-shift) as usize;
-	let prefixed_key = Key::new(key, prefix_bits);
-	let min_offset = prefixed_key.offset(field_body_size);
+	let min_offset = min_offset_for_key(key, prefix_bits, field_body_size);
 	min_offset <= offset
 }
 
 #[inline]
 pub fn is_min_offset_for_space(offset: usize, shift: isize, data: &[u8], prefix_bits: u8, field_body_size: usize) -> bool {
+	assert!(shift < 0, "calling this function makes sense only if shift is negative");
+	let offset = offset - (-shift) as usize;
+	let min_offset = min_offset_for_space(data, prefix_bits, field_body_size);
+	min_offset <= offset
+}
+
+#[inline]
+pub fn min_offset_for_space(data: &[u8], prefix_bits: u8, field_body_size: usize) -> usize {
 	let key_prefix_len = (prefix_bits as usize + 7) / 8;
 	let view = Record::extract_key(data, field_body_size, key_prefix_len);
 	let mut prefix = [0u8; 4];
 	view.copy_to_slice(&mut prefix[..key_prefix_len]);
-	is_min_offset_for_key(offset, shift, &prefix, prefix_bits, field_body_size)
+	min_offset_for_key(&prefix, prefix_bits, field_body_size)
+}
+
+#[inline]
+pub fn min_offset_for_key(key: &[u8], prefix_bits: u8, field_body_size: usize) -> usize {
+	let prefixed_key = Key::new(key, prefix_bits);
+	let min_offset = prefixed_key.offset(field_body_size);
+	min_offset
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]

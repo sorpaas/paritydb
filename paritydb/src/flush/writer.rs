@@ -5,7 +5,7 @@ use std::iter::Peekable;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
 use error::Result;
-use flush::decision::{decision, Decision, is_min_offset_for_space};
+use flush::decision::{decision, Decision, is_min_offset_for_space, min_offset_for_space};
 use key::Key;
 use metadata::Metadata;
 use record::{append_record};
@@ -99,36 +99,40 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 	}
 
 	fn last_step(&mut self) -> Result<()> {
-		// loop until the transaction is finished
-		while self.shift > 0 {
-			let space = self.spaces.next().expect("TODO: db end")?;
-			match space {
+		for space in &mut self.spaces {
+			if self.shift == 0 { break; }
+			match space? {
 				Space::Empty(space) => {
-					self.shift -= space.len as isize;
+					if self.shift > 0 {
+						self.shift -= space.len as isize;
+					}
 				},
 				Space::Occupied(space) => {
-					// write it to a buffer if we are in 'rewrite' state
-					self.buffer.as_raw_mut().extend_from_slice(space.data);
+					if self.shift > 0 {
+						self.buffer.as_raw_mut().extend_from_slice(space.data);
+					} else {
+						if is_min_offset_for_space(space.offset, self.shift, space.data, self.prefix_bits, self.field_body_size) {
+							self.buffer.as_raw_mut().extend_from_slice(space.data);
+						} else {
+							let min_offset = min_offset_for_space(space.data, self.prefix_bits, self.field_body_size) as isize;
+							let diff = space.offset as isize - (-self.shift) - min_offset;
+							if diff < 0 {
+								write_empty_bytes(self.buffer.as_raw_mut(), (-diff) as usize);
+								self.buffer.as_raw_mut().extend_from_slice(space.data);
+								self.shift += -diff;
+							} else {
+								write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift + diff) as usize);
+								self.buffer.as_raw_mut().extend_from_slice(space.data);
+								self.shift = diff;
+							}
+						}
+					}
 				},
 			}
 		}
 
-		while self.shift < 0 {
-			let space = self.spaces.next().expect("TODO: db end")?;
-			match space {
-				Space::Empty(_) => {
-					write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
-					self.shift = 0;
-				},
-				Space::Occupied(space) => {
-					if is_min_offset_for_space(space.offset, self.shift, space.data, self.prefix_bits, self.field_body_size) {
-						self.buffer.as_raw_mut().extend_from_slice(space.data);
-					} else {
-						write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
-						self.shift = 0;
-					}
-				},
-			}
+		if self.shift < 0 {
+			write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
 		}
 
 		// write the len of previous operation
