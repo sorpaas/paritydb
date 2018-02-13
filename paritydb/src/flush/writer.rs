@@ -158,7 +158,7 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 		}
 
 		let space = self.spaces.peek().expect("TODO: db end?")?;
-		let d = decision(operation, space, self.shift, self.field_body_size, self.prefix_bits);
+		let d = decision(operation, space.clone(), self.shift, self.field_body_size, self.prefix_bits);
 		match d {
 			Decision::InsertOperationIntoEmptySpace { key, value, offset, space_len } => {
 				// advance iterators
@@ -217,7 +217,23 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 				// do not advance iterator
 				// finish shift backwards
 				assert!(self.shift < 0, "we are in delete mode");
-				write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
+
+				match space {
+					// if the next space is occupied we'll only add empty bytes until its minimum offset (iff the shift
+					// reaches there)
+					Space::Occupied(space) => {
+						let min_offset = min_offset_for_space(space.data, self.prefix_bits, self.field_body_size) as isize;
+						let diff = space.offset as isize - (-self.shift) - min_offset;
+
+						if diff < 0 {
+							write_empty_bytes(self.buffer.as_raw_mut(), (-diff) as usize);
+						}
+					},
+					_ => {
+						write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
+					},
+				}
+
 				self.shift = 0;
 			},
 			Decision::DeleteOperation { offset, len } => {
