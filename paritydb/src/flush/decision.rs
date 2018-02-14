@@ -57,8 +57,10 @@ pub enum Decision<'o, 'db> {
 	ShiftOccupiedSpace {
 		data: &'db [u8],
 	},
-	/// Returned when backwards shift should end.
-	FinishBackwardShift
+	/// Returned when backward shift should be applied.
+	BackwardShift {
+		len: usize,
+	}
 }
 
 /// Compares occupied space data and operation key.
@@ -99,6 +101,18 @@ pub fn min_offset_for_key(key: &[u8], prefix_bits: u8, field_body_size: usize) -
 	min_offset
 }
 
+#[inline]
+fn backward_shift_len(offset: usize, min_offset: usize, shift: isize) -> usize {
+	let diff = offset as isize - (-shift) - min_offset as isize;
+
+	// we shift backwards at most `shift` and only the necessary to reach `min_offset`
+	if diff < 0 {
+		-diff as usize
+	} else {
+		0
+	}
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Shift {
 	None,
@@ -133,7 +147,7 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 				space_len: space.len,
 			}
 		} else {
-			Decision::FinishBackwardShift
+			Decision::BackwardShift { len: space.len }
 		},
 		(Operation::Insert(_, _), Space::Empty(space), Shift::Forward) => Decision::ConsumeEmptySpace {
 			len: space.len,
@@ -146,7 +160,9 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 						data: space.data,
 					}
 				} else {
-					Decision::FinishBackwardShift
+					let min_offset = min_offset_for_space(space.data, prefix_bits, field_body_size);
+					let len = backward_shift_len(space.offset, min_offset, shift);
+					Decision::BackwardShift { len }
 				},
 				(cmp::Ordering::Less, Shift::Forward) => Decision::ShiftOccupiedSpace {
 					data: space.data,
@@ -164,7 +180,9 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 						offset: space.offset,
 					}
 				} else {
-					Decision::FinishBackwardShift
+					let min_offset = min_offset_for_key(key, prefix_bits, field_body_size);
+					let len = backward_shift_len(space.offset, min_offset, shift);
+					Decision::BackwardShift { len }
 				},
 				(cmp::Ordering::Greater, Shift::None) | (cmp::Ordering::Greater , Shift::Forward) => Decision::InsertOperationBeforeOccupiedSpace {
 					key,
@@ -193,7 +211,9 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 						data: space.data,
 					}
 				} else {
-					Decision::FinishBackwardShift
+					let min_offset = min_offset_for_space(space.data, prefix_bits, field_body_size);
+					let len = backward_shift_len(space.offset, min_offset, shift);
+					Decision::BackwardShift { len }
 				},
 				(cmp::Ordering::Less, Shift::Forward) => Decision::ShiftOccupiedSpace {
 					data: space.data,

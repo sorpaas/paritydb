@@ -213,27 +213,12 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 				// rewrite the space to a buffer
 				self.buffer.as_raw_mut().extend_from_slice(data);
 			},
-			Decision::FinishBackwardShift => {
+			Decision::BackwardShift { len } => {
 				// do not advance iterator
 				// finish shift backwards
 				assert!(self.shift < 0, "we are in delete mode");
 
-				match space {
-					// if the next space is occupied we'll only add empty bytes until its minimum offset (iff the shift
-					// reaches there)
-					Space::Occupied(space) => {
-						let min_offset = min_offset_for_space(space.data, self.prefix_bits, self.field_body_size) as isize;
-						let diff = space.offset as isize - (-self.shift) - min_offset;
-
-						if diff < 0 {
-							write_empty_bytes(self.buffer.as_raw_mut(), (-diff) as usize);
-						}
-					},
-					_ => {
-						write_empty_bytes(self.buffer.as_raw_mut(), (-self.shift) as usize);
-					},
-				}
-
+				write_empty_bytes(self.buffer.as_raw_mut(), len);
 				self.shift = 0;
 			},
 			Decision::DeleteOperation { offset, len } => {
