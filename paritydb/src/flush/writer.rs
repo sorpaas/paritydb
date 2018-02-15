@@ -5,7 +5,7 @@ use std::iter::Peekable;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
 use error::Result;
-use flush::decision::{decision, Decision, is_min_offset_for_space, min_offset_for_space};
+use flush::decision::{decision, Decision, is_min_offset, min_offset_for_space};
 use key::Key;
 use metadata::Metadata;
 use record::{append_record};
@@ -111,11 +111,12 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 					if self.shift > 0 {
 						self.buffer.as_raw_mut().extend_from_slice(space.data);
 					} else {
-						if is_min_offset_for_space(space.offset, self.shift, space.data, self.prefix_bits, self.field_body_size) {
+						let min_offset = min_offset_for_space(space.data, self.prefix_bits, self.field_body_size);
+
+						if is_min_offset(space.offset, min_offset, self.shift) {
 							self.buffer.as_raw_mut().extend_from_slice(space.data);
 						} else {
-							let min_offset = min_offset_for_space(space.data, self.prefix_bits, self.field_body_size) as isize;
-							let diff = space.offset as isize - (-self.shift) - min_offset;
+							let diff = space.offset as isize - (-self.shift) - min_offset as isize;
 							if diff < 0 {
 								write_empty_bytes(self.buffer.as_raw_mut(), (-diff) as usize);
 								self.buffer.as_raw_mut().extend_from_slice(space.data);
@@ -213,13 +214,15 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 				// rewrite the space to a buffer
 				self.buffer.as_raw_mut().extend_from_slice(data);
 			},
-			Decision::BackwardShift { len } => {
+			Decision::InsertPadding { len } => {
 				// do not advance iterator
-				// finish shift backwards
+				// insert padding to compensate for backwards shift
 				assert!(self.shift < 0, "we are in delete mode");
 
 				write_empty_bytes(self.buffer.as_raw_mut(), len);
-				self.shift = 0;
+				self.shift += len as isize;
+
+				assert!(self.shift <= 0, "we will never pad more than the existing shift");
 			},
 			Decision::DeleteOperation { offset, len } => {
 				// advance operations
