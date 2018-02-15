@@ -159,7 +159,7 @@ impl<'op, 'db, I: Iterator<Item = Operation<'op>>> OperationWriter<'db, I> {
 		}
 
 		let space = self.spaces.peek().expect("TODO: db end?")?;
-		let d = decision(operation, space.clone(), self.shift, self.field_body_size, self.prefix_bits);
+		let d = decision(operation, space, self.shift, self.field_body_size, self.prefix_bits);
 		match d {
 			Decision::InsertOperationIntoEmptySpace { key, value, offset, space_len } => {
 				// advance iterators
