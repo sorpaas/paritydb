@@ -57,8 +57,12 @@ pub enum Decision<'o, 'db> {
 	ShiftOccupiedSpace {
 		data: &'db [u8],
 	},
-	/// Returned when backwards shift should end.
-	FinishBackwardShift
+	/// Returned when padding must be added to compensate for backwards shifting
+	/// (e.g. we deleted entries and might need to fill it back with `len` empty
+	/// bytes).
+	InsertPadding {
+		len: usize,
+	}
 }
 
 /// Compares occupied space data and operation key.
@@ -67,19 +71,12 @@ fn compare_space_and_operation(space: &[u8], key: &[u8], field_body_size: usize)
 	Record::extract_key(space, field_body_size, key.len()).partial_cmp(&key).expect("extract key size is equal to key.len(); qed")
 }
 
+/// Tests whether we can apply the whole `shift` without going beyond the
+/// `min_offset`, returns true if we can apply the whole shift.
 #[inline]
-pub fn is_min_offset_for_key(offset: usize, shift: isize, key: &[u8], prefix_bits: u8, field_body_size: usize) -> bool {
+pub fn is_min_offset(offset: usize, min_offset: usize, shift: isize) -> bool {
 	assert!(shift < 0, "calling this function makes sense only if shift is negative");
 	let offset = offset - (-shift) as usize;
-	let min_offset = min_offset_for_key(key, prefix_bits, field_body_size);
-	min_offset <= offset
-}
-
-#[inline]
-pub fn is_min_offset_for_space(offset: usize, shift: isize, data: &[u8], prefix_bits: u8, field_body_size: usize) -> bool {
-	assert!(shift < 0, "calling this function makes sense only if shift is negative");
-	let offset = offset - (-shift) as usize;
-	let min_offset = min_offset_for_space(data, prefix_bits, field_body_size);
 	min_offset <= offset
 }
 
@@ -97,6 +94,16 @@ pub fn min_offset_for_key(key: &[u8], prefix_bits: u8, field_body_size: usize) -
 	let prefixed_key = Key::new(key, prefix_bits);
 	let min_offset = prefixed_key.offset(field_body_size);
 	min_offset
+}
+
+#[inline]
+fn padding_len(offset: usize, min_offset: usize, shift: isize) -> usize {
+	// we only pad at most `shift` and only the necessary to reach `min_offset`
+	let diff = offset as isize - (-shift) - min_offset as isize;
+
+	assert!(diff < 0, "calling this function only makes sense if `is_min_offset` returns false");
+
+	-diff as usize
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -125,15 +132,17 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 			offset: space.offset,
 			space_len: space.len,
 		},
-		(Operation::Insert(key, value), Space::Empty(space), Shift::Backward) => if is_min_offset_for_key(space.offset, shift, key, prefix_bits, field_body_size) {
-			Decision::InsertOperationIntoEmptySpace {
-				key,
-				value,
-				offset: space.offset,
-				space_len: space.len,
+		(Operation::Insert(key, value), Space::Empty(space), Shift::Backward) => {
+			if is_min_offset(space.offset, min_offset_for_key(key, prefix_bits, field_body_size), shift) {
+				Decision::InsertOperationIntoEmptySpace {
+					key,
+					value,
+					offset: space.offset,
+					space_len: space.len,
+				}
+			} else {
+				Decision::InsertPadding { len: space.len }
 			}
-		} else {
-			Decision::FinishBackwardShift
 		},
 		(Operation::Insert(_, _), Space::Empty(space), Shift::Forward) => Decision::ConsumeEmptySpace {
 			len: space.len,
@@ -141,12 +150,17 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 		(Operation::Insert(key, value), Space::Occupied(space), _) => {
 			match (compare_space_and_operation(space.data, key, field_body_size), tip) {
 				(cmp::Ordering::Less, Shift::None) => Decision::SeekSpace,
-				(cmp::Ordering::Less, Shift::Backward) => if is_min_offset_for_space(space.offset, shift, space.data, prefix_bits, field_body_size) {
-					Decision::ShiftOccupiedSpace {
-						data: space.data,
+				(cmp::Ordering::Less, Shift::Backward) => {
+					let min_offset = min_offset_for_space(space.data, prefix_bits, field_body_size);
+
+					if is_min_offset(space.offset, min_offset, shift) {
+						Decision::ShiftOccupiedSpace {
+							data: space.data,
+						}
+					} else {
+						let len = padding_len(space.offset, min_offset, shift);
+						Decision::InsertPadding { len }
 					}
-				} else {
-					Decision::FinishBackwardShift
 				},
 				(cmp::Ordering::Less, Shift::Forward) => Decision::ShiftOccupiedSpace {
 					data: space.data,
@@ -157,14 +171,18 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 					offset: space.offset,
 					old_len: space.data.len()
 				},
-				(cmp::Ordering::Greater, Shift::Backward) => if is_min_offset_for_key(space.offset, shift, key, prefix_bits, field_body_size) {
-					Decision::InsertOperationBeforeOccupiedSpace {
-						key,
-						value,
-						offset: space.offset,
+				(cmp::Ordering::Greater, Shift::Backward) => {
+					let min_offset = min_offset_for_key(key, prefix_bits, field_body_size);
+					if is_min_offset(space.offset, min_offset, shift) {
+						Decision::InsertOperationBeforeOccupiedSpace {
+							key,
+							value,
+							offset: space.offset,
+						}
+					} else {
+						let len = padding_len(space.offset, min_offset, shift);
+						Decision::InsertPadding { len }
 					}
-				} else {
-					Decision::FinishBackwardShift
 				},
 				(cmp::Ordering::Greater, Shift::None) | (cmp::Ordering::Greater , Shift::Forward) => Decision::InsertOperationBeforeOccupiedSpace {
 					key,
@@ -178,22 +196,28 @@ pub fn decision<'o, 'db>(operation: Operation<'o>, space: Space<'db>, shift: isi
 		(Operation::Delete(_), Space::Empty(space), Shift::Forward) => Decision::ConsumeEmptySpace {
 			len: space.len,
 		},
-		(Operation::Delete(key), Space::Empty(space), Shift::Backward) => if is_min_offset_for_key(space.offset, shift, key, prefix_bits, field_body_size) {
-			Decision::ConsumeEmptySpace {
-				len: space.len,
+		(Operation::Delete(key), Space::Empty(space), Shift::Backward) => {
+			if is_min_offset(space.offset, min_offset_for_key(key, prefix_bits, field_body_size), shift) {
+				Decision::ConsumeEmptySpace {
+					len: space.len,
+				}
+			} else {
+				Decision::IgnoreOperation
 			}
-		} else {
-			Decision::IgnoreOperation
 		},
 		(Operation::Delete(key), Space::Occupied(space), _) => {
 			match (compare_space_and_operation(space.data, key, field_body_size), tip) {
 				(cmp::Ordering::Less, Shift::None) => Decision::SeekSpace,
-				(cmp::Ordering::Less, Shift::Backward) => if is_min_offset_for_space(space.offset, shift, space.data, prefix_bits, field_body_size) {
-					Decision::ShiftOccupiedSpace {
-						data: space.data,
+				(cmp::Ordering::Less, Shift::Backward) => {
+					let min_offset = min_offset_for_space(space.data, prefix_bits, field_body_size);
+					if is_min_offset(space.offset, min_offset, shift) {
+						Decision::ShiftOccupiedSpace {
+							data: space.data,
+						}
+					} else {
+						let len = padding_len(space.offset, min_offset, shift);
+						Decision::InsertPadding { len }
 					}
-				} else {
-					Decision::FinishBackwardShift
 				},
 				(cmp::Ordering::Less, Shift::Forward) => Decision::ShiftOccupiedSpace {
 					data: space.data,
