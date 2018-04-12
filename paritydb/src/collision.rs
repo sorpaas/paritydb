@@ -244,6 +244,9 @@ struct LogSlice {
 	len: usize,
 }
 
+unsafe impl Send for LogSlice { }
+unsafe impl Sync for LogSlice { }
+
 impl Ord for LogSlice {
     fn cmp(&self, other: &Self) -> Ordering {
 		unsafe {
