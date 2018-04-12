@@ -463,6 +463,7 @@ impl<'a> IteratorValue<'a> {
 	}
 }
 
+/// Iterator over database key values.
 pub struct DatabaseIterator<'a> {
 	journal_iter: btree_set::IntoIter<Operation<'a>>,
 	record_collisions_iter: Box<Iterator<Item=Result<(&'a [u8], Value<'a>)>> + 'a>,

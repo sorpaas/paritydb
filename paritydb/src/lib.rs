@@ -84,7 +84,7 @@ mod record;
 mod space;
 mod transaction;
 
-pub use database::{Database, Value};
+pub use database::{Database, Value, DatabaseIterator};
 pub use error::{Error, Result, ErrorKind};
 pub use options::{Options, ValuesLen};
 pub use record::Record;
