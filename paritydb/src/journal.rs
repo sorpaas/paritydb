@@ -21,6 +21,9 @@ enum JournalOperation<T> {
 	Delete,
 }
 
+unsafe impl Send for JournalSlice { }
+unsafe impl Sync for JournalSlice { }
+
 /// Unsafe view onto memmap file memory which backs journal.
 #[derive(Debug)]
 struct JournalSlice {
