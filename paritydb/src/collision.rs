@@ -244,6 +244,8 @@ struct LogSlice {
 	len: usize,
 }
 
+// LogEntry wraps a normal [u8] slice and allow viewing of the underlying `Mmap`. Both are Send and Sync, so the marker
+// here are safe.
 unsafe impl Send for LogSlice { }
 unsafe impl Sync for LogSlice { }
 
